@@ -1,0 +1,1 @@
+{"name": "Household bills", "short_name": "Bills", "start_url": "./", "scope": "./", "display": "standalone", "background_color": "#F4F6F1", "theme_color": "#1D6FB5", "icons": [{"src": "./icon-180.png", "sizes": "180x180", "type": "image/png"}, {"src": "./icon-512.png", "sizes": "512x512", "type": "image/png"}]}
