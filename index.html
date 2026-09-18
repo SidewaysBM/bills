@@ -106,9 +106,9 @@ input[type=color] { padding:2px; height:40px; width:56px; }
 .cal .day.out { color:var(--muted); opacity:.5; }
 .cal .day.today .n { background:var(--accent); color:var(--accent-ink); border-radius:10px; padding:0 5px; }
 .cal .day .n { display:inline-block; font-weight:600; margin-bottom:2px; }
-.cal .strip { height:9px; border-radius:2px; margin:2px 0; background:var(--c); font-size:8px; line-height:9px; color:#fff; overflow:hidden; padding-left:2px; }
+.cal .strip { height:15px; border-radius:3px; margin:2px 0; background:var(--c); font-size:10px; font-weight:700; line-height:15px; color:#fff; overflow:hidden; white-space:nowrap; padding-left:3px; letter-spacing:-.2px; font-variant-numeric:tabular-nums; }
 .cal .strip.paid { opacity:.45; }
-.cal .strip.projected { background:repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 6px); }
+.cal .strip.projected { background:transparent; border:1.5px dashed var(--c); color:var(--ink); line-height:12px; height:15px; box-sizing:border-box; }
 .cal .more { font-size:10px; color:var(--muted); }
 .legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:12px; margin:10px 2px; }
 .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--c); margin-right:5px; vertical-align:-1px; }
@@ -380,6 +380,7 @@ const monthKey = s => s ? s.slice(0, 7) : '';
 const monthName = k => { const [y, m] = k.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-AU', { month: 'long', year: 'numeric' }); };
 const catColor = name => (S.cats.find(c => c.name === name) || {}).color || '#8C9AA3';
 const billDate = b => b.due || b.received || '';
+const calAmt = b => b.instalment || b.amount; // per-payment amount if set, else the bill total
 const isOpen = b => b.status === 'unpaid';
 const daysUntil = s => Math.round((fromISO(s) - fromISO(todayISO())) / 864e5);
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2200); }
@@ -435,7 +436,7 @@ function billRow(b, opts = {}) {
   return `<a class="row ${b.projected ? 'projected' : ''}" href="${b.projected ? '#add' : '#bill/' + b.id}" style="--c:${catColor(b.category)}">
     <span class="bar"></span>
     <span><span class="t">${esc(b.provider || 'Unknown provider')}</span><br><span class="s">${esc(b.desc || b.category)}${opts.person && b.person !== 'Joint' ? ' · ' + esc(b.person) : ''}${when ? ' · ' + when : ''}${od}</span></span>
-    <span class="amt num">${money(b.amount)}<span class="st ${st}">${label}</span></span></a>`;
+    <span class="amt num">${money(b.projected ? calAmt(b) : b.amount)}<span class="st ${st}">${label}</span></span></a>`;
 }
 function donut(entries, size = 130) {
   const total = entries.reduce((a, e) => a + e.v, 0); if (!total) return '<div class="muted small">No bills in this period</div>';
@@ -495,12 +496,12 @@ async function vCalendar() {
   for (let d = 1; d <= days; d++) {
     const iso = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const list = (byDay[iso] || []).sort((a, b) => (b.amount || 0) - (a.amount || 0));
-    const strips = list.slice(0, 3).map(b => `<div class="strip ${b.projected ? 'projected' : (b.status === 'paid' || b.status === 'direct_debit') ? 'paid' : ''}" style="--c:${catColor(b.category)}" title="${esc(b.provider)}">${b.amount ? '$' + Math.round(b.amount) : ''}</div>`).join('');
+    const strips = list.slice(0, 3).map(b => `<div class="strip ${b.projected ? 'projected' : (b.status === 'paid' || b.status === 'direct_debit') ? 'paid' : ''}" style="--c:${catColor(b.category)}" title="${esc(b.provider)}">${calAmt(b) ? '$' + Math.round(calAmt(b)).toLocaleString('en-AU') : ''}</div>`).join('');
     cells += `<button class="day ${iso === t ? 'today' : ''}" data-action="day" data-date="${iso}"><span class="n">${d}</span>${strips}${list.length > 3 ? `<div class="more">+${list.length - 3} more</div>` : ''}</button>`;
   }
   const tail = (7 - (startDow + days) % 7) % 7; for (let i = 0; i < tail; i++) cells += '<div class="day out"></div>';
   const monthBills = all.filter(b => monthKey(b.due) === S.calMonth);
-  const total = monthBills.filter(b => !b.projected).reduce((a, b) => a + (b.amount || 0), 0);
+  const total = monthBills.filter(b => !b.projected).reduce((a, b) => a + (calAmt(b) || 0), 0);
   const cats = [...new Set(monthBills.map(b => b.category))];
   return `<h1>Calendar</h1>
   <div class="cal"><div class="head"><button data-action="cal-prev" aria-label="Previous month">‹</button><b>${monthName(S.calMonth)}</b><button data-action="cal-next" aria-label="Next month">›</button></div>
@@ -648,6 +649,7 @@ async function vEdit(id) {
     <div><label>Whose</label><select name="person">${PEOPLE.map(p => `<option ${b.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div></div>
     <label>Description or reference</label><input name="desc" value="${esc(b.desc)}" placeholder="e.g. Quarterly bill, Invoice 1234">
     <label>Amount</label><input name="amount" type="number" step="0.01" inputmode="decimal" value="${b.amount ?? ''}" required>${cands}
+    <label>Per payment <span class="muted small">(optional – if paid in instalments, this shows on the calendar)</span></label><input name="instalment" type="number" step="0.01" inputmode="decimal" value="${b.instalment ?? ''}" placeholder="e.g. 418.00">
     <div class="two"><div><label>Received</label><input name="received" type="date" value="${esc(b.received || '')}"></div><div><label>Due</label><input name="due" type="date" value="${esc(b.due || '')}"></div></div>
     <div class="two"><div><label>Status</label><select name="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${b.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
     <div><label>Repeats</label><select name="recurring">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}" ${b.recurring === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div>
@@ -666,6 +668,7 @@ async function saveForm(form) {
   const b = { ...base, id: id === 'new' ? uid() : id };
   for (const k of ['provider', 'category', 'person', 'desc', 'received', 'due', 'status', 'recurring', 'paidDate', 'method', 'notes']) b[k] = (fd.get(k) || '').trim();
   b.amount = parseFloat(fd.get('amount')); if (isNaN(b.amount)) b.amount = null;
+  b.instalment = parseFloat(fd.get('instalment')); if (isNaN(b.instalment) || !b.instalment) delete b.instalment;
   if (b.status === 'paid' && !b.paidDate) b.paidDate = todayISO();
   if (!b.source) b.source = 'manual';
   b.updated = new Date().toISOString();
@@ -687,7 +690,7 @@ async function vDetail(id) {
   <h1>${esc(b.provider)}</h1><div class="muted">${esc(b.desc || b.category)}</div>
   <div class="hero"><div class="big num">${money(b.amount)}</div><div class="delta" style="color:${od ? 'var(--danger)' : 'inherit'};font-size:15px;font-weight:600">${STATUS[b.status]}${od ? ' · ' + (-daysUntil(b.due)) + ' days overdue' : ''}</div></div>
   <dl><dt>Category</dt><dd>${esc(b.category)}</dd><dt>Whose</dt><dd>${esc(b.person)}</dd><dt>Received</dt><dd>${fmtDate(b.received)}</dd><dt>Due</dt><dd>${fmtDate(b.due)}</dd>
-  ${b.paidDate ? `<dt>Paid</dt><dd>${fmtDate(b.paidDate)}${b.method ? ' by ' + esc(b.method) : ''}</dd>` : ''}${b.recurring ? `<dt>Repeats</dt><dd>${FREQ[b.recurring]}</dd>` : ''}
+  ${b.paidDate ? `<dt>Paid</dt><dd>${fmtDate(b.paidDate)}${b.method ? ' by ' + esc(b.method) : ''}</dd>` : ''}${b.recurring ? `<dt>Repeats</dt><dd>${FREQ[b.recurring]}</dd>` : ''}${b.instalment ? `<dt>Per payment</dt><dd>${money(b.instalment)}</dd>` : ''}
   ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}<dt>Source</dt><dd>${esc(b.source || 'manual')}${b.link ? ` · <a href="${esc(b.link)}" target="_blank" rel="noopener">Open email</a>` : ''}</dd></dl></div>
   <div class="btns">${isOpen(b) || b.status === 'unknown' ? `<button class="btn primary" data-action="mark-paid" data-id="${id}">Mark paid</button>` : ''}<a class="btn" href="#edit/${id}">Edit</a></div>
   ${(b.files || []).length ? `<h2>Documents</h2><div class="list">${b.files.map(f => `<button class="row" style="--c:var(--line);width:100%;border:0;background:none;cursor:pointer" data-action="open-file" data-id="${f.id}"><span class="bar"></span><span><span class="t">${esc(f.name)}</span><br><span class="s">${esc(f.type)}</span></span><span class="amt">Open</span></button>`).join('')}</div>` : ''}
