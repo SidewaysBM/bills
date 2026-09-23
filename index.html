@@ -941,6 +941,22 @@ async function vInsights() {
   <p class="muted small">Bills are counted in the month they're due, or received if there's no due date. One-off jobs like the flooring and battery are included, so big months are usually a single job.</p>`;
 }
 
+/* ---------- what's been loaded ---------- */
+function sources() {
+  const m = {};
+  for (const b of S.bills) {
+    const k = b.account ? 'CommBank ' + b.account
+      : /8383|Altitude|Westpac/i.test((b.method || '') + ' ' + (b.notes || '')) ? 'Westpac card 8383'
+      : b.source === 'import' ? 'Imported (no account set)'
+      : b.source === 'upload' ? 'Read from a PDF' : 'Added by hand';
+    const e = m[k] || (m[k] = { n: 0, v: 0, from: '', to: '' });
+    e.n++; e.v += b.amount || 0;
+    const d = billDate(b);
+    if (d) { if (!e.from || d < e.from) e.from = d; if (!e.to || d > e.to) e.to = d; }
+  }
+  return Object.entries(m).sort((a, b) => b[1].n - a[1].n);
+}
+
 /* ---------- Duplicates ---------- */
 async function vDupes() {
   const list = dupeList().sort((a, b) => (b.amount || 0) - (a.amount || 0));
@@ -972,6 +988,10 @@ async function vSettings() {
   <div class="btns"><button class="btn primary" data-action="backup">Backup with documents</button><button class="btn" data-action="export-csv">Export CSV</button></div>
   <div class="btns"><label class="btn">Restore or merge a backup<input type="file" class="hid" accept="*/*" data-action="import-json"></label><label class="btn">Import CSV<input type="file" class="hid" accept="*/*" data-action="import-csv"></label><button class="btn" data-action="paste-csv">Paste CSV</button></div>
   <p class="muted small">Restoring merges by bill ID: bills already here are updated, new ones added, nothing is deleted. CSV needs headers like provider, category, description, amount, due, received, status, notes.</p>
+  <h2>What's loaded</h2><p class="muted small">Every bill, grouped by where it came from — handy when you've lost track of which file you imported.</p>
+  <div class="list">${sources().map(([k, e]) => `<div class="row" style="--c:var(--accent)"><span class="bar"></span>
+    <span><span class="t">${esc(k)}</span><br><span class="s">${e.n} ${e.n === 1 ? 'entry' : 'entries'}${e.from ? ' · ' + fmtShort(e.from) + ' – ' + fmtShort(e.to) : ''}</span></span>
+    <span class="amt num">${money(e.v)}</span></div>`).join('') || '<div class="empty">Nothing loaded yet.</div>'}</div>
   <h2>Duplicates</h2><p class="muted small">Checks for the same amount appearing twice within a fortnight — an invoice and the bank payment that settled it, say. ${dupeList().length ? dupeList().length + ' flagged right now.' : 'None flagged.'}</p>
   <div class="btns"><button class="btn" data-action="dupe-scan">Check for duplicates</button><a class="btn" href="#dupes">Review</a></div>
   <h2>Reading rules</h2><p class="muted small">${S.rules.length} provider rules decide how PDFs are read.</p><div class="btns"><a class="btn" href="#rules">Manage rules</a></div>
