@@ -1150,7 +1150,7 @@ document.addEventListener('click', async e => {
   else if (a === 'dupe-scan') { toast('Checking…'); const f = await scanDupes(); toast(f ? `${f} possible duplicate${f === 1 ? '' : 's'}` : 'No duplicates found'); render(); }
   else if (a === 'spend-period') { S.spend.period = el.dataset.v; S.settings.spendPeriod = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
   else if (a === 'filter-group') { S.filters.group = el.dataset.v; S.settings.group = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
-  else if (a === 'cat-group') { const c = S.cats[+el.dataset.i]; c.group = (c.group === 'living') ? 'bills' : 'living'; await saveCats(); render(); }
+  else if (a === 'cat-group') { const c = S.cats[+el.dataset.i]; c.group = (c.group === 'living') ? 'bills' : 'living'; c.userGroup = true; await saveCats(); render(); }
   else if (a === 'paste-csv') { pasteCSVSheet(); }
   else if (a === 'paste-csv-cancel') { closeSheet(); }
   else if (a === 'paste-csv-go') { const ta = $('#csvpaste'); const t = ta ? ta.value : ''; if (!t.trim()) return toast('Nothing pasted'); closeSheet(); await importCSVText(t); }
@@ -1193,7 +1193,15 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
   S.cats = await DB.kvGet('cats', DEFAULT_CATS); S.rules = await DB.kvGet('rules', JSON.parse(JSON.stringify(DEFAULT_RULES))); S.settings = await DB.kvGet('settings', {}); S.deleted = await DB.kvGet('deleted', []);
   S.filters.group = S.settings.group || 'all';
   S.spend.period = S.settings.spendPeriod || 'fy';
-  { let changed = 0; DEFAULT_CATS.forEach(c => { const have = S.cats.find(x => x.name === c.name); if (!have) { S.cats.push({ ...c }); changed++; } else if (!have.group) { have.group = c.group; changed++; } }); S.cats.forEach(c => { if (!c.group) { c.group = 'bills'; changed++; } }); if (changed) await saveCats(); } // new built-in categories + group tags
+  { let changed = 0;
+    // Built-in categories keep their built-in group unless the user has changed it by hand.
+    // A category that arrived through an import before it was built in was filed as a bill
+    // by an older build, and that used to stick — so Bunnings ended up on the calendar.
+    DEFAULT_CATS.forEach(c => { const have = S.cats.find(x => x.name === c.name);
+      if (!have) { S.cats.push({ ...c }); changed++; }
+      else if (have.group !== c.group && !have.userGroup) { have.group = c.group; changed++; } });
+    S.cats.forEach(c => { if (!c.group) { c.group = 'bills'; changed++; } });
+    if (changed) await saveCats(); }
   await SYNC.init();
   if (!location.hash) location.hash = '#home';
   render();
