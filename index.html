@@ -466,7 +466,7 @@ async function vHome() {
   const lastBackup = S.settings.lastBackup;
   const stale = !lastBackup || daysUntil(lastBackup) < -30;
 
-  if (!S.bills.length) return `<h1>Welcome</h1><p class="muted">No bills here yet. Restore your backup file to bring in everything so far, or add the first bill.</p><div class="btns"><label class="btn primary block" style="flex-basis:100%">Restore a backup<input type="file" class="hid" accept=".json,application/json" data-action="import-json"></label><a class="btn block" href="#edit/new" style="flex-basis:100%">Add a bill</a></div>`;
+  if (!S.bills.length) return `<h1>Welcome</h1><p class="muted">No bills here yet. Restore your backup file to bring in everything so far, or add the first bill.</p><div class="btns"><label class="btn primary block" style="flex-basis:100%">Restore a backup<input type="file" class="hid" accept="*/*" data-action="import-json"></label><a class="btn block" href="#edit/new" style="flex-basis:100%">Add a bill</a></div>`;
   return `<h1>${monthName(mk)}</h1>
   <div class="hero"><div><div class="big num">${money(sum(thisM))}</div><div class="delta">${thisM.length} bill${thisM.length === 1 ? '' : 's'} this month${delta === null ? '' : ` · ${delta >= 0 ? '+' : '−'}${money(Math.abs(delta))} vs ${monthName(lastMk).split(' ')[0]}`}</div></div></div>
   ${stale && S.bills.length ? `<div class="banner">${lastBackup ? 'Last backup was ' + fmtDate(lastBackup) : 'No backup yet'} – export a copy to your iCloud folder.<button class="btn sm" data-action="backup">Back up</button></div>` : ''}
@@ -729,7 +729,7 @@ async function vSettings() {
   <h2>Saving</h2><p class="muted small">${SYNC.on ? 'Auto-save is on. Every change is written to “Household bills data.json” in the folder on the Mac, and documents go into “Household bill documents”. Any phone or computer that opens this address sees the same bills.' : 'Bills and documents are stored on this device only. Nothing is sent anywhere. On iPhone, add the app to the Home Screen so iOS keeps its data, and back up regularly.'}</p>
   <h2>Backups</h2><p class="muted small">A backup file is still useful for moving data or keeping a copy elsewhere. ${S.settings.lastBackup ? 'Last backup ' + fmtDate(S.settings.lastBackup) + '.' : 'No backup yet.'}</p>
   <div class="btns"><button class="btn primary" data-action="backup">Backup with documents</button><button class="btn" data-action="export-csv">Export CSV</button></div>
-  <div class="btns"><label class="btn">Restore or merge a backup<input type="file" class="hid" accept=".json,application/json" data-action="import-json"></label><label class="btn">Import CSV<input type="file" class="hid" accept=".csv,text/csv" data-action="import-csv"></label></div>
+  <div class="btns"><label class="btn">Restore or merge a backup<input type="file" class="hid" accept="*/*" data-action="import-json"></label><label class="btn">Import CSV<input type="file" class="hid" accept="*/*" data-action="import-csv"></label><button class="btn" data-action="paste-csv">Paste CSV</button></div>
   <p class="muted small">Restoring merges by bill ID: bills already here are updated, new ones added, nothing is deleted. CSV needs headers like provider, category, description, amount, due, received, status, notes.</p>
   <h2>Reading rules</h2><p class="muted small">${S.rules.length} provider rules decide how PDFs are read.</p><div class="btns"><a class="btn" href="#rules">Manage rules</a></div>
   <h2>Categories</h2><div class="list">${S.cats.map((c, i) => `<div class="rule"><span style="display:flex;align-items:center;gap:10px"><input type="color" value="${c.color}" data-action="cat-color" data-i="${i}"><span>${esc(c.name)}</span></span><button class="btn sm danger" data-action="cat-del" data-i="${i}">Remove</button></div>`).join('')}</div>
@@ -769,8 +769,9 @@ function parseCSV(text) {
   while ((m = re.exec(text)) && m[0] !== '') { let v = m[1]; if (v.startsWith('"')) v = v.slice(1, -1).replace(/""/g, '"'); row.push(v); if (m[3] !== ',') { rows.push(row); row = []; } }
   return rows.filter(r => r.some(v => v !== ''));
 }
-async function importCSV(file) {
-  const rows = parseCSV(await file.text()); if (rows.length < 2) return toast('No rows found');
+async function importCSV(file) { return importCSVText(await file.text()); }
+async function importCSVText(text) {
+  const rows = parseCSV(text); if (rows.length < 2) return toast('No rows found');
   const head = rows[0].map(h => h.toLowerCase().trim());
   const col = (...names) => head.findIndex(h => names.some(n => h === n || h.includes(n)));
   const ix = { provider: col('provider', 'supplier', 'payee', 'business'), category: col('category'), desc: col('desc', 'reference', 'ref'), person: col('person', 'whose', 'for'), amount: col('amount', 'total'), received: col('received', 'date received', 'issued', 'invoice date'), due: col('due'), status: col('status'), notes: col('note'), paidDate: col('paid on', 'paiddate', 'paid date'), method: col('method', 'paid by'), recurring: col('recurring', 'repeat', 'frequency'), link: col('link', 'email') };
@@ -833,6 +834,7 @@ function ruleFromForm(form) {
 }
 
 /* ---------- events ---------- */
+function pasteCSVSheet() { openSheet('<h2>Paste CSV</h2><p class="muted small">Paste the whole file, including the header row.</p><textarea id="csvpaste" rows="8" style="width:100%;font-size:16px" placeholder="provider,category,..."></textarea><div class="btns"><button class="btn primary" data-action="paste-csv-go">Import</button><button class="btn" data-action="paste-csv-cancel">Cancel</button></div>'); }
 function openSheet(html) { $('#sheet').innerHTML = '<div class="handle"></div>' + html; $('#sheet').classList.add('on'); $('#sheet-bg').classList.add('on'); }
 function closeSheet() { $('#sheet').classList.remove('on'); $('#sheet-bg').classList.remove('on'); setTimeout(() => { $('#sheet').innerHTML = ''; }, 250); }
 document.addEventListener('click', async e => {
@@ -859,6 +861,9 @@ document.addEventListener('click', async e => {
   else if (a === 'export-csv') { download(new Blob([csvOf(S.bills)], { type: 'text/csv' }), `Household bills ${todayISO()}.csv`); toast('CSV exported'); }
   else if (a === 'cat-del') { if (!confirm('Remove this category? Bills keep their category name.')) return; S.cats.splice(+el.dataset.i, 1); await saveCats(); render(); }
   else if (a === 'reset') { if (!confirm('This deletes every bill and document on this device and reloads the starting data. Continue?')) return; await DB.clear('bills'); await DB.clear('files'); await DB.kvSet('seeded', false); S.bills = []; await seed(); toast('Reset done'); location.hash = '#home'; render(); }
+  else if (a === 'paste-csv') { pasteCSVSheet(); }
+  else if (a === 'paste-csv-cancel') { closeSheet(); }
+  else if (a === 'paste-csv-go') { const ta = $('#csvpaste'); const t = ta ? ta.value : ''; if (!t.trim()) return toast('Nothing pasted'); closeSheet(); await importCSVText(t); }
   else if (a === 'rules-reset') { if (!confirm('Replace your rules with the built-in set?')) return; S.rules = JSON.parse(JSON.stringify(DEFAULT_RULES)); await saveRules(); toast('Rules restored'); render(); }
   else if (a === 'rule-test') { const r = ruleFromForm($('#ruleform')); const res = extractBill(S.lastText, [r]);
     $('#ruletest').innerHTML = `<div class="flag" style="border-color:var(--accent)">${res.rule ? 'Rule matched' : 'Match words not found in the last PDF'} · amount ${money(res.amount)} · due ${fmtDate(res.due)} · issued ${fmtDate(res.issued)} · ref ${esc(res.ref || '—')}</div>`; }
