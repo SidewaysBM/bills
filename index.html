@@ -110,6 +110,8 @@ input[type=color] { padding:2px; height:40px; width:56px; }
 .cal .strip.paid { opacity:.45; }
 .cal .strip.projected { background:transparent; border:1.5px dashed var(--c); color:var(--ink); line-height:12px; height:15px; box-sizing:border-box; }
 .cal .more { font-size:10px; color:var(--muted); }
+.dupe { margin:18px 0; }
+.dupe .btns { margin-top:8px; }
 .row.catrow .ct { min-width:0; }
 .row.catrow .track { display:block; height:6px; border-radius:3px; background:var(--soft); margin:5px 0 4px; overflow:hidden; }
 .row.catrow .track i { display:block; height:100%; border-radius:3px; }
@@ -372,6 +374,7 @@ const DEFAULT_CATS = [
   ['Transport & parking', '#2E6FA8', 'living'], ['Kids – school', '#BF6B35', 'living'],
   ['Electronics & tech', '#4C63B8', 'living'], ['Donations', '#C05B6B', 'living'],
   ['Unsorted', '#8C9AA3', 'living'], ['Bank fees & interest', '#7A6E8C'],
+  ['Mortgage', '#2E8055'], ['Cash withdrawals', '#7A8C3F', 'living'],
 ].map(([name, color, group]) => ({ name, color, group: group || 'bills' }));
 const STATUS = { unpaid: 'Unpaid', paid: 'Paid', direct_debit: 'Direct debit', unknown: 'Check' };
 const FREQ = { '': 'One-off', monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' };
@@ -402,6 +405,56 @@ const calAmt = b => b.instalment || b.amount; // per-payment amount if set, else
 const isOpen = b => b.status === 'unpaid';
 const daysUntil = s => Math.round((fromISO(s) - fromISO(todayISO())) / 864e5);
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2200); }
+
+/* ---------- possible duplicates ----------
+   The same spend can arrive twice: once from an invoice PDF or a card statement,
+   and again as the bank payment that settled it. Nothing is deleted automatically
+   — matches are flagged and reviewed on the Duplicates screen. */
+const daysApart = (a, b) => Math.abs(Math.round((fromISO(a) - fromISO(b)) / 864e5));
+// Compare invoice references on their digits alone: the same invoice is written
+// "INV-210", "Inv 210" and "INV210" in different places, and the keyword itself is
+// sometimes inside the reference and sometimes in front of it.
+const invRefs = s => [...String(s || '').matchAll(/\b(?:inv|invoice|order|ref)[\s\-#]*([a-z]{0,4}[\s\-#]?\d{3,})/gi)]
+  .map(m => m[1].replace(/\D/g, '')).filter(r => r.length >= 3);
+const nameWords = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+const sourceOf = b => (b.account || b.method || b.source || '').toLowerCase();
+function findDupe(b, pool) {
+  const d = billDate(b); if (!b.amount || !d) return null;
+  const refs = invRefs(b.desc + ' ' + b.notes), words = new Set(nameWords(b.provider));
+  for (const x of pool) {
+    if (x.id === b.id || !x.amount || x.projected) continue;
+    const xd = billDate(x); if (!xd) continue;
+    if (Math.abs(x.amount - b.amount) > 0.011) continue;
+    const gap = daysApart(xd, d);
+    // A matching invoice number is strong on its own, and an invoice is often paid weeks later.
+    const xrefs = invRefs(x.desc + ' ' + x.notes);
+    if (gap <= 45 && refs.length && xrefs.length && refs.some(r => xrefs.includes(r)))
+      return { id: x.id, why: 'same invoice number' };
+    // Otherwise the two have to come from different places. The same amount leaving the
+    // same account twice is a bill that repeats — a mortgage, an insurance instalment —
+    // not the same spend counted twice.
+    if (sourceOf(x) === sourceOf(b)) continue;
+    if (b.recurring || x.recurring) continue;
+    if (gap > 5) continue;
+    if (nameWords(x.provider).some(w => words.has(w)))
+      return { id: x.id, why: 'same amount and provider, paid from two places' };
+    if (b.amount >= 500) return { id: x.id, why: 'same amount within a few days, from two places' };
+  }
+  return null;
+}
+async function scanDupes() {
+  const seen = [];
+  let found = 0;
+  for (const b of S.bills.slice().sort((a, b) => (a.updated || '').localeCompare(b.updated || ''))) {
+    const hit = findDupe(b, seen);
+    const dupe = hit ? hit.id : '', why = hit ? hit.why : '';
+    if ((b.dupe || '') !== dupe || (b.dupeWhy || '') !== why) { b.dupe = dupe; b.dupeWhy = why; await DB.put('bills', b); }
+    if (dupe) found++;
+    seen.push(b);
+  }
+  return found;
+}
+const dupeList = () => S.bills.filter(b => b.dupe && S.bills.some(x => x.id === b.dupe));
 
 /* ---------- projections of recurring bills ---------- */
 function projected(horizonDays = 120) {
@@ -438,7 +491,7 @@ function nav() {
 async function render() {
   const [view, ...rest] = location.hash.slice(1).split('/');
   const arg = rest.join('/');
-  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
+  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, dupes: vDupes, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
   const fn = views[view] || vHome;
   $('main').innerHTML = await fn(arg);
   nav(); window.scrollTo(0, 0);
@@ -501,6 +554,7 @@ async function vHome() {
   <h2>Due in the next two weeks</h2>
   <div class="list">${soon.length ? soon.map(b => billRow(b)).join('') : '<div class="empty">Nothing due. Nice.</div>'}</div>
   ${expected.length ? `<h2>Expected soon <span class="muted small">from recurring bills</span></h2><div class="list">${expected.map(b => billRow(b)).join('')}</div>` : ''}
+  ${dupeList().length ? `<div class="banner" style="margin-top:16px">${dupeList().length} possible duplicate${dupeList().length === 1 ? '' : 's'} to check.<a class="btn sm" href="#dupes">Review</a></div>` : ''}
   ${check.length ? `<div class="banner" style="margin-top:16px">${check.length} bill${check.length === 1 ? '' : 's'} marked “Check” – payment not confirmed.<a class="btn sm" href="#bills" data-filter="unknown">Review</a></div>` : ''}
   <h2>This month by category</h2>
   <div class="tile">${donut(byCategory(thisM))}</div>`;
@@ -539,7 +593,7 @@ async function vCalendar() {
 async function vBills() {
   const f = S.filters, q = f.q.toLowerCase();
   let list = S.bills.filter(b => inGroup(b) && (f.status === 'all' || (f.status === 'open' ? isOpen(b) : b.status === f.status)) && (!f.cat || b.category === f.cat) && (!f.person || b.person === f.person)
-    && (!q || [b.provider, b.desc, b.notes, b.category, String(b.amount)].join(' ').toLowerCase().includes(q)));
+    && (!q || [b.provider, b.desc, b.notes, b.category, b.account, String(b.amount)].join(' ').toLowerCase().includes(q)));
   list.sort((a, b) => billDate(b).localeCompare(billDate(a)));
   const groups = {}; list.forEach(b => (groups[monthKey(billDate(b)) || 'undated'] = groups[monthKey(billDate(b)) || 'undated'] || []).push(b));
   const chip = (v, l) => `<button class="chip ${f.status === v ? 'on' : ''}" data-action="filter-status" data-v="${v}">${l}</button>`;
@@ -715,6 +769,7 @@ async function vDetail(id) {
   <h1>${esc(b.provider)}</h1><div class="muted">${esc(b.desc || b.category)}</div>
   <div class="hero"><div class="big num">${money(b.amount)}</div><div class="delta" style="color:${od ? 'var(--danger)' : 'inherit'};font-size:15px;font-weight:600">${STATUS[b.status]}${od ? ' · ' + (-daysUntil(b.due)) + ' days overdue' : ''}</div></div>
   <dl><dt>Category</dt><dd>${esc(b.category)}</dd><dt>Whose</dt><dd>${esc(b.person)}</dd><dt>Received</dt><dd>${fmtDate(b.received)}</dd><dt>Due</dt><dd>${fmtDate(b.due)}</dd>
+  ${b.account ? `<dt>Account</dt><dd>${esc(b.account)}</dd>` : ''}
   ${b.paidDate ? `<dt>Paid</dt><dd>${fmtDate(b.paidDate)}${b.method ? ' by ' + esc(b.method) : ''}</dd>` : ''}${b.recurring ? `<dt>Repeats</dt><dd>${FREQ[b.recurring]}</dd>` : ''}${b.instalment ? `<dt>Per payment</dt><dd>${money(b.instalment)}</dd>` : ''}
   ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}<dt>Source</dt><dd>${esc(b.source || 'manual')}${b.link ? ` · <a href="${esc(b.link)}" target="_blank" rel="noopener">Open email</a>` : ''}</dd></dl></div>
   <div class="btns">${isOpen(b) || b.status === 'unknown' ? `<button class="btn primary" data-action="mark-paid" data-id="${id}">Mark paid</button>` : ''}<a class="btn" href="#edit/${id}">Edit</a></div>
@@ -886,6 +941,29 @@ async function vInsights() {
   <p class="muted small">Bills are counted in the month they're due, or received if there's no due date. One-off jobs like the flooring and battery are included, so big months are usually a single job.</p>`;
 }
 
+/* ---------- Duplicates ---------- */
+async function vDupes() {
+  const list = dupeList().sort((a, b) => (b.amount || 0) - (a.amount || 0));
+  const pair = b => {
+    const other = S.bills.find(x => x.id === b.dupe) || {};
+    const line = (x, tag) => `<div class="row" style="--c:${catColor(x.category)}"><span class="bar"></span>
+      <span><span class="t">${esc(x.provider || '—')}</span><br><span class="s">${esc(tag)} · ${fmtShort(billDate(x))}${x.account ? ' · ' + esc(x.account) : ''}${x.method ? ' · ' + esc(x.method) : ''}</span></span>
+      <span class="amt num">${money(x.amount)}</span></div>`;
+    return `<div class="dupe">
+      <div class="muted small" style="margin:0 0 6px">Matched on ${esc(b.dupeWhy || 'amount and date')}</div>
+      <div class="list">${line(other, 'Already in the app')}${line(b, 'Newly imported')}</div>
+      <div class="btns">
+        <button class="btn" data-action="dupe-keep" data-id="${b.id}">Keep both</button>
+        <a class="btn" href="#bill/${b.id}">Open</a>
+        <button class="btn danger" data-action="dupe-del" data-id="${b.id}">Remove the new one</button>
+      </div></div>`;
+  };
+  return `<h1>Possible duplicates</h1>
+  <p class="muted small">Two rows for the same money: an invoice or card purchase that also turns up as the bank payment. A matching invoice number counts for up to 45 days; otherwise the amounts must match within a few days <em>and</em> come from different accounts — so a mortgage or insurance instalment that repeats isn't flagged. Nothing has been deleted.</p>
+  <div class="btns"><button class="btn" data-action="dupe-scan">Scan everything again</button></div>
+  ${list.length ? list.map(pair).join('') : '<div class="empty">Nothing flagged. </div>'}`;
+}
+
 /* ---------- Settings ---------- */
 async function vSettings() {
   return `<h1>Settings</h1>
@@ -894,6 +972,8 @@ async function vSettings() {
   <div class="btns"><button class="btn primary" data-action="backup">Backup with documents</button><button class="btn" data-action="export-csv">Export CSV</button></div>
   <div class="btns"><label class="btn">Restore or merge a backup<input type="file" class="hid" accept="*/*" data-action="import-json"></label><label class="btn">Import CSV<input type="file" class="hid" accept="*/*" data-action="import-csv"></label><button class="btn" data-action="paste-csv">Paste CSV</button></div>
   <p class="muted small">Restoring merges by bill ID: bills already here are updated, new ones added, nothing is deleted. CSV needs headers like provider, category, description, amount, due, received, status, notes.</p>
+  <h2>Duplicates</h2><p class="muted small">Checks for the same amount appearing twice within a fortnight — an invoice and the bank payment that settled it, say. ${dupeList().length ? dupeList().length + ' flagged right now.' : 'None flagged.'}</p>
+  <div class="btns"><button class="btn" data-action="dupe-scan">Check for duplicates</button><a class="btn" href="#dupes">Review</a></div>
   <h2>Reading rules</h2><p class="muted small">${S.rules.length} provider rules decide how PDFs are read.</p><div class="btns"><a class="btn" href="#rules">Manage rules</a></div>
   <h2>Categories</h2><div class="list">${S.cats.map((c, i) => `<div class="rule"><span style="display:flex;align-items:center;gap:10px"><input type="color" value="${c.color}" data-action="cat-color" data-i="${i}"><span>${esc(c.name)}</span></span><span style="display:flex;gap:6px"><button class="btn sm" data-action="cat-group" data-i="${i}">${(c.group === 'living') ? 'Day to day' : 'Bill'}</button><button class="btn sm danger" data-action="cat-del" data-i="${i}">Remove</button></span></div>`).join('')}</div>
   <form class="f" id="catform" style="display:flex;gap:8px;align-items:flex-end"><div style="flex:1"><label>New category</label><input name="name" required></div><div><label>Colour</label><input type="color" name="color" value="#6B7A85"></div><button class="btn" type="submit">Add</button></form>
@@ -923,7 +1003,7 @@ async function saveBackup() {
 }
 function download(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); }
 function csvOf(bills) {
-  const cols = ['provider', 'category', 'desc', 'person', 'amount', 'received', 'due', 'status', 'paidDate', 'method', 'recurring', 'notes', 'link'];
+  const cols = ['provider', 'category', 'desc', 'person', 'amount', 'received', 'due', 'status', 'paidDate', 'method', 'recurring', 'notes', 'link', 'account'];
   const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   return cols.join(',') + '\n' + bills.map(b => cols.map(c => q(b[c])).join(',')).join('\n');
 }
@@ -937,16 +1017,20 @@ async function importCSVText(text) {
   const rows = parseCSV(text); if (rows.length < 2) return toast('No rows found');
   const head = rows[0].map(h => h.toLowerCase().trim());
   const col = (...names) => head.findIndex(h => names.some(n => h === n || h.includes(n)));
-  const ix = { provider: col('provider', 'supplier', 'payee', 'business'), category: col('category'), desc: col('desc', 'reference', 'ref'), person: col('person', 'whose', 'for'), amount: col('amount', 'total'), received: col('received', 'date received', 'issued', 'invoice date'), due: col('due'), status: col('status'), notes: col('note'), paidDate: col('paid on', 'paiddate', 'paid date'), method: col('method', 'paid by'), recurring: col('recurring', 'repeat', 'frequency'), link: col('link', 'email') };
+  let dup = 0;
+  const ix = { account: col('account', 'bank account', 'source'), provider: col('provider', 'supplier', 'payee', 'business'), category: col('category'), desc: col('desc', 'reference', 'ref'), person: col('person', 'whose', 'for'), amount: col('amount', 'total'), received: col('received', 'date received', 'issued', 'invoice date'), due: col('due'), status: col('status'), notes: col('note'), paidDate: col('paid on', 'paiddate', 'paid date'), method: col('method', 'paid by'), recurring: col('recurring', 'repeat', 'frequency'), link: col('link', 'email') };
   const anyDate = s => parseDate(s) || (s && /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '') || (s && !isNaN(Date.parse(s)) ? isoOf(new Date(s)) : '');
   let n = 0;
   for (const r of rows.slice(1)) { const g = k => ix[k] >= 0 ? (r[ix[k]] || '').trim() : '';
     if (!g('provider')) continue;
     const stRaw = g('status').toLowerCase(); const status = /direct/.test(stRaw) ? 'direct_debit' : /paid/.test(stRaw) ? 'paid' : /unknown|check/.test(stRaw) ? 'unknown' : 'unpaid';
     const cat = S.cats.find(c => c.name.toLowerCase() === g('category').toLowerCase()); if (!cat && g('category')) { const known = DEFAULT_CATS.find(c => c.name.toLowerCase() === g('category').toLowerCase()); S.cats.push(known ? { ...known } : { name: g('category'), color: '#8C9AA3', group: 'bills' }); }
-    const b = { id: uid(), updated: new Date().toISOString(), provider: g('provider'), category: cat ? cat.name : (g('category') || 'Other'), desc: g('desc'), person: PEOPLE.includes(g('person')) ? g('person') : 'Joint', amount: parseFloat(g('amount').replace(/[^0-9.\-]/g, '')) || null, received: anyDate(g('received')), due: anyDate(g('due')), status, paidDate: anyDate(g('paidDate')), method: g('method'), recurring: /month/i.test(g('recurring')) ? 'monthly' : /quart/i.test(g('recurring')) ? 'quarterly' : /ann|year/i.test(g('recurring')) ? 'annual' : '', notes: g('notes'), source: 'import', link: g('link'), files: [] };
+    const b = { id: uid(), updated: new Date().toISOString(), provider: g('provider'), category: cat ? cat.name : (g('category') || 'Other'), desc: g('desc'), person: PEOPLE.includes(g('person')) ? g('person') : 'Joint', amount: parseFloat(g('amount').replace(/[^0-9.\-]/g, '')) || null, received: anyDate(g('received')), due: anyDate(g('due')), status, paidDate: anyDate(g('paidDate')), method: g('method'), recurring: /month/i.test(g('recurring')) ? 'monthly' : /quart/i.test(g('recurring')) ? 'quarterly' : /ann|year/i.test(g('recurring')) ? 'annual' : '', notes: g('notes'), source: 'import', link: g('link'), account: g('account'), files: [] };
+    const hit = findDupe(b, S.bills); if (hit) { b.dupe = hit.id; b.dupeWhy = hit.why; dup++; }
     await DB.put('bills', b); S.bills.push(b); n++; }
-  await DB.kvSet('cats', S.cats); toast(`Imported ${n} bills`); location.hash = '#bills'; render();
+  await DB.kvSet('cats', S.cats);
+  toast(dup ? `Imported ${n} – ${dup} may be duplicates` : `Imported ${n} bills`);
+  location.hash = dup ? '#dupes' : '#bills'; render();
 }
 async function importJSON(file) {
   let data; try { data = JSON.parse(await file.text()); } catch (e) { return toast('Not a valid backup file'); }
@@ -1024,6 +1108,9 @@ document.addEventListener('click', async e => {
   else if (a === 'export-csv') { download(new Blob([csvOf(S.bills)], { type: 'text/csv' }), `Household bills ${todayISO()}.csv`); toast('CSV exported'); }
   else if (a === 'cat-del') { if (!confirm('Remove this category? Bills keep their category name.')) return; S.cats.splice(+el.dataset.i, 1); await saveCats(); render(); }
   else if (a === 'reset') { if (!confirm('This deletes every bill and document on this device and reloads the starting data. Continue?')) return; await DB.clear('bills'); await DB.clear('files'); await DB.kvSet('seeded', false); S.bills = []; await seed(); toast('Reset done'); location.hash = '#home'; render(); }
+  else if (a === 'dupe-keep') { const b = S.bills.find(x => x.id === el.dataset.id); if (b) { b.dupe = ''; b.dupeWhy = ''; b.updated = new Date().toISOString(); await DB.put('bills', b); } toast('Kept both'); render(); }
+  else if (a === 'dupe-del') { const b = S.bills.find(x => x.id === el.dataset.id); if (b) { await DB.del('bills', b.id); S.bills = S.bills.filter(x => x.id !== b.id); S.deleted = (S.deleted || []).concat([{ id: b.id, updated: new Date().toISOString() }]); await DB.kvSet('deleted', S.deleted); } toast('Removed'); render(); }
+  else if (a === 'dupe-scan') { toast('Checking…'); const f = await scanDupes(); toast(f ? `${f} possible duplicate${f === 1 ? '' : 's'}` : 'No duplicates found'); render(); }
   else if (a === 'spend-period') { S.spend.period = el.dataset.v; S.settings.spendPeriod = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
   else if (a === 'filter-group') { S.filters.group = el.dataset.v; S.settings.group = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
   else if (a === 'cat-group') { const c = S.cats[+el.dataset.i]; c.group = (c.group === 'living') ? 'bills' : 'living'; await saveCats(); render(); }
