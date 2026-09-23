@@ -110,6 +110,13 @@ input[type=color] { padding:2px; height:40px; width:56px; }
 .cal .strip.paid { opacity:.45; }
 .cal .strip.projected { background:transparent; border:1.5px dashed var(--c); color:var(--ink); line-height:12px; height:15px; box-sizing:border-box; }
 .cal .more { font-size:10px; color:var(--muted); }
+.row.catrow .ct { min-width:0; }
+.row.catrow .track { display:block; height:6px; border-radius:3px; background:var(--soft); margin:5px 0 4px; overflow:hidden; }
+.row.catrow .track i { display:block; height:100%; border-radius:3px; }
+.row.catrow .ct .t { font-weight:600; display:block; }
+.row.catrow .ct .s { display:block; font-size:13px; color:var(--muted); }
+.row.catrow .amt .st { color:var(--muted); }
+nav.tabs a { font-size:10.5px; }
 .legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:12px; margin:10px 2px; }
 .legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; background:var(--c); margin-right:5px; vertical-align:-1px; }
 
@@ -361,12 +368,16 @@ const DEFAULT_CATS = [
   ['Entertainment', '#C0459E', 'living'], ['Health & medical', '#2E9E7B', 'living'], ['Pets', '#C98A1E', 'living'],
   ['Clothing', '#4E7FC1', 'living'], ['Personal care', '#AD6AA8', 'living'], ['Travel', '#1F8FA8', 'living'],
   ['Gifts', '#D14D77', 'living'], ['Household supplies', '#5F8A7A', 'living'],
+  ['Hardware & garden', '#9B7B1F', 'living'], ['Alcohol', '#A15282', 'living'],
+  ['Transport & parking', '#2E6FA8', 'living'], ['Kids – school', '#BF6B35', 'living'],
+  ['Electronics & tech', '#4C63B8', 'living'], ['Donations', '#C05B6B', 'living'],
+  ['Unsorted', '#8C9AA3', 'living'], ['Bank fees & interest', '#7A6E8C'],
 ].map(([name, color, group]) => ({ name, color, group: group || 'bills' }));
 const STATUS = { unpaid: 'Unpaid', paid: 'Paid', direct_debit: 'Direct debit', unknown: 'Check' };
 const FREQ = { '': 'One-off', monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' };
 const PEOPLE = ['Joint', 'Ben', 'Georgie'];
 
-const S = { bills: [], deleted: [], cats: DEFAULT_CATS, rules: DEFAULT_RULES, settings: {}, calMonth: null, lastText: '', pending: [], filters: { status: 'all', cat: '', person: '', q: '', group: 'all' } };
+const S = { bills: [], deleted: [], cats: DEFAULT_CATS, rules: DEFAULT_RULES, settings: {}, calMonth: null, lastText: '', pending: [], spend: { period: 'fy' }, filters: { status: 'all', cat: '', person: '', q: '', group: 'all' } };
 
 /* ---------- helpers ---------- */
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -416,17 +427,18 @@ const ICONS = {
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   bills: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>',
+  wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8V6.5A1.5 1.5 0 0 1 4.5 5H17"/><rect x="3" y="8" width="18" height="11" rx="2"/><circle cx="16.5" cy="13.5" r="1.3"/></svg>',
 };
 function nav() {
   const v = location.hash.slice(1).split('/')[0] || 'home';
   const tab = (id, label, icon) => `<a href="#${id}" class="${v === id ? 'on' : ''}">${ICONS[icon]}${label}</a>`;
   $('nav.tabs').innerHTML = tab('home', 'Home', 'home') + tab('calendar', 'Calendar', 'cal') +
-    `<a href="#add" class="add ${v === 'add' ? 'on' : ''}"><span class="plus">+</span>Add</a>` + tab('bills', 'Bills', 'bills') + tab('insights', 'Insights', 'chart');
+    `<a href="#add" class="add ${v === 'add' ? 'on' : ''}"><span class="plus">+</span>Add</a>` + tab('bills', 'Bills', 'bills') + tab('spend', 'Spend', 'wallet') + tab('insights', 'Insights', 'chart');
 }
 async function render() {
   const [view, ...rest] = location.hash.slice(1).split('/');
   const arg = rest.join('/');
-  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
+  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
   const fn = views[view] || vHome;
   $('main').innerHTML = await fn(arg);
   nav(); window.scrollTo(0, 0);
@@ -438,7 +450,9 @@ window.addEventListener('hashchange', () => { closeSheet(); render(); });
 function billRow(b, opts = {}) {
   const st = b.projected ? 'expected' : b.status;
   const label = b.projected ? 'Expected' : STATUS[st] || st;
-  const when = b.due ? (b.projected ? 'Expected ' : 'Due ') + fmtShort(b.due) : (b.received ? 'Received ' + fmtShort(b.received) : '');
+  const spent = !b.projected && b.status === 'paid' && catGroup(b.category) === 'living';
+  const when = spent ? fmtShort(b.paidDate || billDate(b))
+    : b.due ? (b.projected ? 'Expected ' : 'Due ') + fmtShort(b.due) : (b.received ? 'Received ' + fmtShort(b.received) : '');
   const od = isOpen(b) && b.due && b.due < todayISO() ? ` · <span style="color:var(--danger)">${-daysUntil(b.due)}d overdue</span>` : '';
   return `<a class="row ${b.projected ? 'projected' : ''}" href="${b.projected ? '#add' : '#bill/' + b.id}" style="--c:${catColor(b.category)}">
     <span class="bar"></span>
@@ -708,6 +722,143 @@ async function vDetail(id) {
   <div class="btns" style="margin-top:28px"><button class="btn danger" data-action="delete" data-id="${id}">Delete this bill</button></div>`;
 }
 
+/* ---------- Spending ---------- */
+const SPEND_PERIODS = [
+  ['month', 'This month'], ['m3', 'Last 3 months'], ['fy', 'This FY'], ['y12', 'Last 12 months'], ['all', 'Everything'],
+];
+function fyStart(iso) { const [y, m] = iso.split('-').map(Number); return (m >= 7 ? y : y - 1) + '-07-01'; }
+function spendRange(p) {
+  // The comparison period is always the same LENGTH as the one on screen, so a
+  // part-finished month or financial year is never measured against a whole one.
+  const t = todayISO(), m1 = t.slice(0, 7) + '-01';
+  if (p === 'month') { const from = m1;
+    return { from, to: t, prevFrom: addMonths(from, -1), prevTo: addMonths(t, -1), label: monthName(monthKey(t)), vs: 'the same days last month' }; }
+  if (p === 'm3') { const from = addMonths(m1, -2);
+    return { from, to: t, prevFrom: addMonths(from, -3), prevTo: addMonths(t, -3), label: 'Last 3 months', vs: 'the 3 months before' }; }
+  if (p === 'y12') { const from = addMonths(m1, -11);
+    return { from, to: t, prevFrom: addMonths(from, -12), prevTo: addMonths(t, -12), label: 'Last 12 months', vs: 'the 12 months before' }; }
+  if (p === 'all') { const first = S.bills.map(billDate).filter(Boolean).sort()[0] || t;
+    return { from: first, to: t, prevFrom: '', prevTo: '', label: 'All time', vs: '' }; }
+  const from = fyStart(t);
+  return { from, to: t, prevFrom: addMonths(from, -12), prevTo: addMonths(t, -12),
+           label: 'FY' + String(Number(from.slice(0, 4)) + 1).slice(2), vs: 'the same stretch last year' };
+}
+const isSpend = b => catGroup(b.category) === 'living' && b.amount;
+const inRange = (b, f, to) => { const d = billDate(b); return d && d >= f && d <= to; };
+const sumOf = a => a.reduce((x, b) => x + (b.amount || 0), 0);
+function deltaTag(now, prev) {
+  if (!prev) return '';
+  const pc = Math.round((now - prev) / prev * 100);
+  if (!isFinite(pc) || pc === 0) return '<span class="muted small">same as before</span>';
+  const up = pc > 0;
+  return `<span class="small" style="color:${up ? 'var(--danger)' : 'var(--ok)'}">${up ? '▲' : '▼'} ${Math.abs(pc)}%</span>`;
+}
+function trendChart(keys, vals, color) {
+  const W = 390, H = 168, padX = 6, padB = 20, padT = 20;
+  const n = Math.max(1, vals.length), max = Math.max(1, ...vals);
+  const avg = vals.reduce((a, v) => a + v, 0) / n;
+  const plot = H - padT - padB, bw = (W - padX * 2) / n, gap = Math.min(4, bw * 0.18);
+  const y = v => padT + plot * (1 - v / max);
+  const peak = vals.indexOf(Math.max(...vals));
+  let s = `<line x1="${padX}" x2="${W - padX}" y1="${y(avg).toFixed(1)}" y2="${y(avg).toFixed(1)}" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 4" opacity=".55"/>`;
+  vals.forEach((v, i) => {
+    const x = padX + i * bw + gap, w = Math.max(3, bw - gap * 2), top = y(v), h = Math.max(v > 0 ? 2 : 0, padT + plot - top);
+    if (v > 0) s += `<rect x="${x.toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${color}" opacity="${i === n - 1 ? 1 : .82}"><title>${esc(monthName(keys[i]))}: ${money(v)}</title></rect>`;
+    const short = fromISO(keys[i] + '-01').toLocaleDateString('en-AU', { month: 'narrow' });
+    s += `<text x="${(x + w / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${short}</text>`;
+    if (i === peak || i === n - 1) s += `<text x="${(x + w / 2).toFixed(1)}" y="${(top - 5).toFixed(1)}" text-anchor="middle" style="font-size:9px">${v >= 1000 ? '$' + (v / 1000).toFixed(1) + 'k' : '$' + Math.round(v)}</text>`;
+  });
+  s += `<text x="${W - padX}" y="${(y(avg) - 4).toFixed(1)}" text-anchor="end" style="font-size:9px">avg ${money(avg)}</text>`;
+  return `<div class="tile"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Monthly spending">${s}</svg></div>`;
+}
+function monthSeries(pool, n = 12) {
+  const t = todayISO().slice(0, 7) + '-01', keys = [];
+  for (let i = n - 1; i >= 0; i--) keys.push(monthKey(addMonths(t, -i)));
+  return { keys, vals: keys.map(k => sumOf(pool.filter(b => monthKey(billDate(b)) === k))) };
+}
+function catRows(list, total, prevList, link = true) {
+  const now = {}, before = {}, cnt = {};
+  list.forEach(b => { now[b.category] = (now[b.category] || 0) + b.amount; cnt[b.category] = (cnt[b.category] || 0) + 1; });
+  (prevList || []).forEach(b => before[b.category] = (before[b.category] || 0) + b.amount);
+  const rows = Object.entries(now).sort((a, b) => b[1] - a[1]);
+  const top = rows.length ? rows[0][1] : 1;
+  return rows.map(([k, v]) => {
+    const pct = total ? Math.round(v / total * 100) : 0;
+    const inner = `<span class="bar"></span>
+      <span class="ct"><span class="t">${esc(k)}</span>
+        <span class="track"><i style="width:${Math.max(1.5, v / top * 100).toFixed(1)}%;background:${catColor(k)}"></i></span>
+        <span class="s">${cnt[k]} ${cnt[k] === 1 ? 'purchase' : 'purchases'} · ${pct}% of spend</span></span>
+      <span class="amt num">${money(v)}<span class="st">${deltaTag(v, before[k])}</span></span>`;
+    const sty = ` style="--c:${catColor(k)}"`;
+    return link ? `<a class="row catrow" href="#spendcat/${encodeURIComponent(k)}"${sty}>${inner}</a>` : `<div class="row catrow"${sty}>${inner}</div>`;
+  }).join('');
+}
+function merchantRows(list, limit = 12) {
+  const m = {}, c = {};
+  list.forEach(b => { const p = b.provider || 'Unknown'; m[p] = (m[p] || 0) + b.amount; c[p] = (c[p] || 0) + 1; });
+  const rows = Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, limit);
+  if (!rows.length) return '<div class="empty">Nothing in this period.</div>';
+  return rows.map(([p, v]) => {
+    const cat = (list.find(b => (b.provider || 'Unknown') === p) || {}).category;
+    return `<div class="row" style="--c:${catColor(cat)}"><span class="bar"></span>
+      <span><span class="t">${esc(p)}</span><br><span class="s">${c[p]} ${c[p] === 1 ? 'purchase' : 'purchases'} · ${esc(cat || '')}</span></span>
+      <span class="amt num">${money(v)}</span></div>`;
+  }).join('');
+}
+function periodChips(view) {
+  return `<div class="chips">${SPEND_PERIODS.map(([v, l]) =>
+    `<button class="chip ${S.spend.period === v ? 'on' : ''}" data-action="spend-period" data-v="${v}">${l}</button>`).join('')}</div>`;
+}
+async function vSpend() {
+  const p = S.spend.period, r = spendRange(p);
+  const all = S.bills.filter(isSpend);
+  const list = all.filter(b => inRange(b, r.from, r.to));
+  const prev = r.prevFrom ? all.filter(b => inRange(b, r.prevFrom, r.prevTo)) : [];
+  const total = sumOf(list), prevTotal = sumOf(prev);
+  const days = Math.max(1, Math.round((fromISO(r.to) - fromISO(r.from)) / 864e5) + 1);
+  const perWeek = total / days * 7, perMonth = total / days * 30.44;
+  const biggest = list.slice().sort((a, b) => b.amount - a.amount)[0];
+  const { keys, vals } = monthSeries(all, 12);
+  const recent = list.slice().sort((a, b) => billDate(b).localeCompare(billDate(a))).slice(0, 15);
+  return `<h1>Spending</h1>
+  <p class="muted small" style="margin:0 0 6px">Day-to-day money — groceries, fuel, eating out, transport and the rest. Bills live on their own tabs.</p>
+  ${periodChips('spend')}
+  <div class="hero"><span><span class="big num">${money(total)}</span><br><span class="delta">${esc(r.label)} · ${list.length} purchases ${prevTotal ? '· ' + deltaTag(total, prevTotal) + ' vs ' + r.vs : ''}</span></span></div>
+  <div class="tiles">
+    <div class="tile"><div class="v num">${money(perWeek)}</div><div class="l">A week</div></div>
+    <div class="tile"><div class="v num">${money(perMonth)}</div><div class="l">A month</div></div>
+    <div class="tile"><div class="v num">${money(biggest ? biggest.amount : 0)}</div><div class="l">Biggest — ${esc(biggest ? biggest.provider : '—')}</div></div>
+    <div class="tile"><div class="v num">${money(list.length ? total / list.length : 0)}</div><div class="l">Average purchase</div></div>
+  </div>
+  <h2>Month by month <span class="muted small">last 12 months, all day-to-day</span></h2>
+  ${trendChart(keys, vals, 'var(--accent)')}
+  <h2>Where it goes</h2>
+  <div class="list">${catRows(list, total, prev) || '<div class="empty">Nothing in this period.</div>'}</div>
+  <h2>Top merchants</h2><div class="list">${merchantRows(list)}</div>
+  <h2>Recent</h2><div class="list">${recent.map(b => billRow(b)).join('') || '<div class="empty">Nothing yet.</div>'}</div>
+  <p class="muted small">Tap a category to see its own trend and every purchase in it.</p>`;
+}
+async function vSpendCat(arg) {
+  const name = decodeURIComponent(arg || '');
+  const p = S.spend.period, r = spendRange(p);
+  const all = S.bills.filter(b => b.amount && b.category === name);
+  const list = all.filter(b => inRange(b, r.from, r.to));
+  const prev = r.prevFrom ? all.filter(b => inRange(b, r.prevFrom, r.prevTo)) : [];
+  const total = sumOf(list), prevTotal = sumOf(prev);
+  const allSpend = sumOf(S.bills.filter(isSpend).filter(b => inRange(b, r.from, r.to)));
+  const { keys, vals } = monthSeries(all, 12);
+  const rows = list.slice().sort((a, b) => billDate(b).localeCompare(billDate(a)));
+  return `<h1>${esc(name)}</h1>
+  <p class="muted small" style="margin:0 0 6px"><a href="#spend">← All spending</a></p>
+  ${periodChips('spendcat')}
+  <div class="hero"><span><span class="big num">${money(total)}</span><br><span class="delta">${esc(r.label)} · ${list.length} purchases · ${allSpend ? Math.round(total / allSpend * 100) : 0}% of day-to-day ${prevTotal ? '· ' + deltaTag(total, prevTotal) + ' vs ' + r.vs : ''}</span></span></div>
+  <h2>Month by month <span class="muted small">last 12 months, whole period</span></h2>
+  ${trendChart(keys, vals, catColor(name))}
+  <h2>Who got paid</h2><div class="list">${merchantRows(list, 20)}</div>
+  <h2>Every purchase <span class="muted small">${rows.length}</span></h2>
+  <div class="list">${rows.map(b => billRow(b)).join('') || '<div class="empty">Nothing in this period.</div>'}</div>`;
+}
+
 /* ---------- Insights ---------- */
 async function vInsights() {
   const t = todayISO(); const months = []; for (let i = 11; i >= 0; i--) months.push(monthKey(addMonths(t.slice(0, 7) + '-01', -i)));
@@ -792,7 +943,7 @@ async function importCSVText(text) {
   for (const r of rows.slice(1)) { const g = k => ix[k] >= 0 ? (r[ix[k]] || '').trim() : '';
     if (!g('provider')) continue;
     const stRaw = g('status').toLowerCase(); const status = /direct/.test(stRaw) ? 'direct_debit' : /paid/.test(stRaw) ? 'paid' : /unknown|check/.test(stRaw) ? 'unknown' : 'unpaid';
-    const cat = S.cats.find(c => c.name.toLowerCase() === g('category').toLowerCase()); if (!cat && g('category')) S.cats.push({ name: g('category'), color: '#8C9AA3' });
+    const cat = S.cats.find(c => c.name.toLowerCase() === g('category').toLowerCase()); if (!cat && g('category')) { const known = DEFAULT_CATS.find(c => c.name.toLowerCase() === g('category').toLowerCase()); S.cats.push(known ? { ...known } : { name: g('category'), color: '#8C9AA3', group: 'bills' }); }
     const b = { id: uid(), updated: new Date().toISOString(), provider: g('provider'), category: cat ? cat.name : (g('category') || 'Other'), desc: g('desc'), person: PEOPLE.includes(g('person')) ? g('person') : 'Joint', amount: parseFloat(g('amount').replace(/[^0-9.\-]/g, '')) || null, received: anyDate(g('received')), due: anyDate(g('due')), status, paidDate: anyDate(g('paidDate')), method: g('method'), recurring: /month/i.test(g('recurring')) ? 'monthly' : /quart/i.test(g('recurring')) ? 'quarterly' : /ann|year/i.test(g('recurring')) ? 'annual' : '', notes: g('notes'), source: 'import', link: g('link'), files: [] };
     await DB.put('bills', b); S.bills.push(b); n++; }
   await DB.kvSet('cats', S.cats); toast(`Imported ${n} bills`); location.hash = '#bills'; render();
@@ -873,6 +1024,7 @@ document.addEventListener('click', async e => {
   else if (a === 'export-csv') { download(new Blob([csvOf(S.bills)], { type: 'text/csv' }), `Household bills ${todayISO()}.csv`); toast('CSV exported'); }
   else if (a === 'cat-del') { if (!confirm('Remove this category? Bills keep their category name.')) return; S.cats.splice(+el.dataset.i, 1); await saveCats(); render(); }
   else if (a === 'reset') { if (!confirm('This deletes every bill and document on this device and reloads the starting data. Continue?')) return; await DB.clear('bills'); await DB.clear('files'); await DB.kvSet('seeded', false); S.bills = []; await seed(); toast('Reset done'); location.hash = '#home'; render(); }
+  else if (a === 'spend-period') { S.spend.period = el.dataset.v; S.settings.spendPeriod = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
   else if (a === 'filter-group') { S.filters.group = el.dataset.v; S.settings.group = el.dataset.v; await DB.kvSet('settings', S.settings); render(); }
   else if (a === 'cat-group') { const c = S.cats[+el.dataset.i]; c.group = (c.group === 'living') ? 'bills' : 'living'; await saveCats(); render(); }
   else if (a === 'paste-csv') { pasteCSVSheet(); }
@@ -916,6 +1068,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
   S.bills = await DB.all('bills'); if (!S.bills.length) await seed();
   S.cats = await DB.kvGet('cats', DEFAULT_CATS); S.rules = await DB.kvGet('rules', JSON.parse(JSON.stringify(DEFAULT_RULES))); S.settings = await DB.kvGet('settings', {}); S.deleted = await DB.kvGet('deleted', []);
   S.filters.group = S.settings.group || 'all';
+  S.spend.period = S.settings.spendPeriod || 'fy';
   { let changed = 0; DEFAULT_CATS.forEach(c => { const have = S.cats.find(x => x.name === c.name); if (!have) { S.cats.push({ ...c }); changed++; } else if (!have.group) { have.group = c.group; changed++; } }); S.cats.forEach(c => { if (!c.group) { c.group = 'bills'; changed++; } }); if (changed) await saveCats(); } // new built-in categories + group tags
   await SYNC.init();
   if (!location.hash) location.hash = '#home';
