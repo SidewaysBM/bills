@@ -612,7 +612,7 @@ async function vCalendar() {
 // the box itself on every keystroke closes the keyboard on iPhone and drops the letters.
 function billsResults() {
   const f = S.filters, q = f.q.toLowerCase();
-  let list = S.bills.filter(b => inGroup(b) && (f.status === 'all' || (f.status === 'open' ? isOpen(b) : b.status === f.status)) && (!f.cat || b.category === f.cat) && (!f.person || b.person === f.person)
+  let list = S.bills.filter(b => catGroup(b.category) !== 'living' && (f.status === 'all' || (f.status === 'open' ? isOpen(b) : b.status === f.status)) && (!f.cat || b.category === f.cat) && (!f.person || b.person === f.person)
     && (!q || [b.provider, b.desc, b.notes, b.category, b.account, String(b.amount)].join(' ').toLowerCase().includes(q)));
   list.sort((a, b) => billDate(b).localeCompare(billDate(a)));
   const found = list.length, shown = Math.min(found, S.listLimit || PAGE);
@@ -627,7 +627,7 @@ async function vBills() {
   const f = S.filters;
   const chip = (v, l) => `<button class="chip ${f.status === v ? 'on' : ''}" data-action="filter-status" data-v="${v}">${l}</button>`;
   return `<h1>Bills</h1>
-  ${groupChips()}
+  <p class="muted small" style="margin:0 0 8px">Day-to-day spending is on the Spend tab.</p>
   <div class="chips">${chip('all', 'All')}${chip('open', 'Unpaid')}${chip('paid', 'Paid')}${chip('direct_debit', 'Direct debit')}${chip('unknown', 'Check')}</div>
   <div class="filters"><select data-action="filter-cat"><option value="">All categories</option>${S.cats.map(c => `<option ${f.cat === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
   <select data-action="filter-person"><option value="">Everyone</option>${PEOPLE.map(p => `<option ${f.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
@@ -1204,7 +1204,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
   try { await DB.open(); } catch (e) { $('main').innerHTML = `<div class="empty">This browser won't store data here (${esc(e.message || e)}). Try opening the file in Safari or Chrome.</div>`; return; }
   S.bills = await DB.all('bills'); if (!S.bills.length) await seed();
   S.cats = await DB.kvGet('cats', DEFAULT_CATS); S.rules = await DB.kvGet('rules', JSON.parse(JSON.stringify(DEFAULT_RULES))); S.settings = await DB.kvGet('settings', {}); S.deleted = await DB.kvGet('deleted', []);
-  S.filters.group = S.settings.group || 'all';
+  S.filters.group = S.settings.group || 'bills';
   S.spend.period = S.settings.spendPeriod || 'fy';
   { let changed = 0;
     // Built-in categories keep their built-in group unless the user has changed it by hand.
