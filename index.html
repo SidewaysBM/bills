@@ -380,7 +380,8 @@ const STATUS = { unpaid: 'Unpaid', paid: 'Paid', direct_debit: 'Direct debit', u
 const FREQ = { '': 'One-off', monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' };
 const PEOPLE = ['Joint', 'Ben', 'Georgie'];
 
-const S = { bills: [], deleted: [], cats: DEFAULT_CATS, rules: DEFAULT_RULES, settings: {}, calMonth: null, lastText: '', pending: [], spend: { period: 'fy' }, filters: { status: 'all', cat: '', person: '', q: '', group: 'all' } };
+const PAGE = 150;   // rows drawn at once; a phone chokes on thousands
+const S = { bills: [], deleted: [], listLimit: PAGE, cats: DEFAULT_CATS, rules: DEFAULT_RULES, settings: {}, calMonth: null, lastText: '', pending: [], spend: { period: 'fy' }, filters: { status: 'all', cat: '', person: '', q: '', group: 'all' } };
 
 /* ---------- helpers ---------- */
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -488,13 +489,22 @@ function nav() {
   $('nav.tabs').innerHTML = tab('home', 'Home', 'home') + tab('calendar', 'Calendar', 'cal') +
     `<a href="#add" class="add ${v === 'add' ? 'on' : ''}"><span class="plus">+</span>Add</a>` + tab('bills', 'Bills', 'bills') + tab('spend', 'Spend', 'wallet') + tab('insights', 'Insights', 'chart');
 }
-async function render() {
+async function render(keepPage) {
   const [view, ...rest] = location.hash.slice(1).split('/');
   const arg = rest.join('/');
+  if (!keepPage) S.listLimit = PAGE;
+  // Rebuilding <main> throws away the focused input, which on a phone closes the
+  // keyboard after a single letter. Remember the caret and put it back.
+  const ae = document.activeElement;
+  const caret = ae && ae.dataset && ae.dataset.action === 'filter-q' ? ae.selectionStart : null;
   const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, dupes: vDupes, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
   const fn = views[view] || vHome;
   $('main').innerHTML = await fn(arg);
-  nav(); window.scrollTo(0, 0);
+  nav();
+  if (caret !== null) {
+    const box = $('[data-action="filter-q"]');
+    if (box) { box.focus(); try { box.setSelectionRange(caret, caret); } catch (e) {} }
+  } else window.scrollTo(0, 0);
   if (fn === vAdd && S.pending.length) processPending();
 }
 window.addEventListener('hashchange', () => { closeSheet(); render(); });
@@ -565,7 +575,9 @@ async function vCalendar() {
   if (!S.calMonth) S.calMonth = todayISO().slice(0, 7);
   const [y, m] = S.calMonth.split('-').map(Number);
   const first = new Date(y, m - 1, 1), startDow = (first.getDay() + 6) % 7, days = new Date(y, m, 0).getDate();
-  const all = [...S.bills, ...projected(400)].filter(b => b.due && inGroup(b));
+  // A calendar is about what falls due. Day-to-day purchases are already paid and
+  // would bury the bills, so they stay on the Spend tab.
+  const all = [...S.bills, ...projected(400)].filter(b => b.due && catGroup(b.category) !== 'living');
   const byDay = {}; all.forEach(b => (byDay[b.due] = byDay[b.due] || []).push(b));
   const t = todayISO();
   let cells = '';
@@ -581,7 +593,7 @@ async function vCalendar() {
   const total = monthBills.filter(b => !b.projected).reduce((a, b) => a + (calAmt(b) || 0), 0);
   const cats = [...new Set(monthBills.map(b => b.category))];
   return `<h1>Calendar</h1>
-  ${groupChips()}
+  <p class="muted small" style="margin:0 0 10px">Bills and what's expected next. Day-to-day spending lives on the Spend tab.</p>
   <div class="cal"><div class="head"><button data-action="cal-prev" aria-label="Previous month">‹</button><b>${monthName(S.calMonth)}</b><button data-action="cal-next" aria-label="Next month">›</button></div>
   <div class="dow"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div class="grid">${cells}</div></div>
   <div class="legend">${cats.map(c => `<span style="--c:${catColor(c)}">${esc(c)}</span>`).join('')}<span style="--c:var(--muted)">striped = expected</span></div>
@@ -595,7 +607,9 @@ async function vBills() {
   let list = S.bills.filter(b => inGroup(b) && (f.status === 'all' || (f.status === 'open' ? isOpen(b) : b.status === f.status)) && (!f.cat || b.category === f.cat) && (!f.person || b.person === f.person)
     && (!q || [b.provider, b.desc, b.notes, b.category, b.account, String(b.amount)].join(' ').toLowerCase().includes(q)));
   list.sort((a, b) => billDate(b).localeCompare(billDate(a)));
-  const groups = {}; list.forEach(b => (groups[monthKey(billDate(b)) || 'undated'] = groups[monthKey(billDate(b)) || 'undated'] || []).push(b));
+  const found = list.length, shown = Math.min(found, S.listLimit || PAGE);
+  const page = list.slice(0, shown);
+  const groups = {}; page.forEach(b => (groups[monthKey(billDate(b)) || 'undated'] = groups[monthKey(billDate(b)) || 'undated'] || []).push(b));
   const chip = (v, l) => `<button class="chip ${f.status === v ? 'on' : ''}" data-action="filter-status" data-v="${v}">${l}</button>`;
   const total = list.reduce((a, b) => a + (b.amount || 0), 0);
   return `<h1>Bills</h1>
@@ -604,8 +618,9 @@ async function vBills() {
   <div class="filters"><select data-action="filter-cat"><option value="">All categories</option>${S.cats.map(c => `<option ${f.cat === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
   <select data-action="filter-person"><option value="">Everyone</option>${PEOPLE.map(p => `<option ${f.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
   <div class="filters"><input type="search" placeholder="Search provider, description, amount" value="${esc(f.q)}" data-action="filter-q"></div>
-  <div class="group"><span>${list.length} bills</span><span class="num">${money(total)}</span></div>
-  ${Object.keys(groups).sort().reverse().map(k => `<div class="group"><span>${k === 'undated' ? 'No date' : monthName(k)}</span><span class="num">${money(groups[k].reduce((a, b) => a + (b.amount || 0), 0))}</span></div><div class="list">${groups[k].map(b => billRow(b, { person: true })).join('')}</div>`).join('') || '<div class="empty">No bills match. Add one with the + button.</div>'}`;
+  <div class="group"><span>${found} bills${shown < found ? ` · showing ${shown}` : ''}</span><span class="num">${money(total)}</span></div>
+  ${shown < found ? '' : ''}${Object.keys(groups).sort().reverse().map(k => `<div class="group"><span>${k === 'undated' ? 'No date' : monthName(k)}</span><span class="num">${money(groups[k].reduce((a, b) => a + (b.amount || 0), 0))}</span></div><div class="list">${groups[k].map(b => billRow(b, { person: true })).join('')}</div>`).join('') || '<div class="empty">No bills match. Add one with the + button.</div>'}
+  ${shown < found ? `<div class="btns"><button class="btn block" data-action="show-more">Show ${Math.min(PAGE, found - shown)} more of ${found - shown}</button></div>` : ''}`;
 }
 
 /* ---------- auto-save to the Mac (only when served by serve_bills.py) ---------- */
@@ -910,8 +925,9 @@ async function vSpendCat(arg) {
   <h2>Month by month <span class="muted small">last 12 months, whole period</span></h2>
   ${trendChart(keys, vals, catColor(name))}
   <h2>Who got paid</h2><div class="list">${merchantRows(list, 20)}</div>
-  <h2>Every purchase <span class="muted small">${rows.length}</span></h2>
-  <div class="list">${rows.map(b => billRow(b)).join('') || '<div class="empty">Nothing in this period.</div>'}</div>`;
+  <h2>Every purchase <span class="muted small">${rows.length}${rows.length > (S.listLimit || PAGE) ? ` · showing ${S.listLimit || PAGE}` : ''}</span></h2>
+  <div class="list">${rows.slice(0, S.listLimit || PAGE).map(b => billRow(b)).join('') || '<div class="empty">Nothing in this period.</div>'}</div>
+  ${rows.length > (S.listLimit || PAGE) ? `<div class="btns"><button class="btn block" data-action="show-more">Show more</button></div>` : ''}`;
 }
 
 /* ---------- Insights ---------- */
@@ -1108,9 +1124,10 @@ document.addEventListener('click', async e => {
   const el = e.target.closest('[data-action]'); if (!el || el.tagName === 'INPUT' || el.tagName === 'SELECT') return;
   const a = el.dataset.action;
   if (a === 'cal-prev' || a === 'cal-next') { S.calMonth = monthKey(addMonths(S.calMonth + '-01', a === 'cal-prev' ? -1 : 1)); render(); }
-  else if (a === 'day') { const d = el.dataset.date; const list = [...S.bills, ...projected(400)].filter(b => b.due === d);
+  else if (a === 'day') { const d = el.dataset.date; const list = [...S.bills, ...projected(400)].filter(b => b.due === d && catGroup(b.category) !== 'living');
     openSheet(`<h2 style="margin-top:0">${fmtDate(d)}</h2><div class="list">${list.map(b => billRow(b)).join('') || '<div class="empty">Nothing due</div>'}</div><div class="btns"><a class="btn" href="#edit/new" data-action="close-sheet">Add a bill for this day</a></div>`); S.draft = { id: 'new', status: 'unpaid', person: 'Joint', received: todayISO(), due: d, files: [], recurring: '' }; }
   else if (a === 'close-sheet') closeSheet();
+  else if (a === 'show-more') { S.listLimit = (S.listLimit || PAGE) + PAGE; render(true); }
   else if (a === 'filter-status') { S.filters.status = el.dataset.v; render(); }
   else if (a === 'use-amount') { $('#billform [name=amount]').value = el.dataset.v; }
   else if (a === 'skip') { S.draft = null; location.hash = '#add'; }
@@ -1151,7 +1168,7 @@ document.addEventListener('change', async e => {
   else if (a === 'import-json' && el.files[0]) importJSON(el.files[0]);
   else if (a === 'import-csv' && el.files[0]) importCSV(el.files[0]);
 });
-document.addEventListener('input', e => { if (e.target.dataset.action === 'filter-q') { S.filters.q = e.target.value; clearTimeout(S._qh); S._qh = setTimeout(render, 250); } });
+document.addEventListener('input', e => { if (e.target.dataset.action === 'filter-q') { S.filters.q = e.target.value; clearTimeout(S._qh); S._qh = setTimeout(() => render(), 300); } });
 document.addEventListener('submit', async e => {
   e.preventDefault(); const f = e.target;
   if (f.id === 'billform') saveForm(f);
