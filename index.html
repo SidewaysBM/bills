@@ -418,7 +418,8 @@ const daysApart = (a, b) => Math.abs(Math.round((fromISO(a) - fromISO(b)) / 864e
 // sometimes inside the reference and sometimes in front of it.
 const invRefs = s => [...String(s || '').matchAll(/\b(?:inv|invoice|order|ref)[\s\-#]*([a-z]{0,4}[\s\-#]?\d{3,})/gi)]
   .map(m => m[1].replace(/\D/g, '')).filter(r => r.length >= 3);
-const nameWords = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+const STOP = new Set(['the', 'and', 'pty', 'ltd', 'app', 'com', 'aus', 'for', 'inc', 'card', 'bill', 'bpay', 'netbank', 'commbank', 'transfer', 'direct', 'debit', 'insurance', 'monthly', 'wangaratta', 'melbourne', 'sydney']);
+const nameWords = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !STOP.has(w));
 const sourceOf = b => (b.account || b.method || b.source || '').toLowerCase();
 function findDupe(b, pool) {
   const d = billDate(b); if (!b.amount || !d) return null;
@@ -436,11 +437,12 @@ function findDupe(b, pool) {
     // same account twice is a bill that repeats — a mortgage, an insurance instalment —
     // not the same spend counted twice.
     if (sourceOf(x) === sourceOf(b)) continue;
+    // Same provider from two places — an invoice you entered and the bank payment of it —
+    // is a duplicate even when the bill repeats monthly; the instalment matches its own payment.
+    if (gap <= 60 && nameWords(x.provider).some(w => words.has(w)))
+      return { id: x.id, why: 'same amount and provider, from two places' };
     if (b.recurring || x.recurring) continue;
-    if (gap > 5) continue;
-    if (nameWords(x.provider).some(w => words.has(w)))
-      return { id: x.id, why: 'same amount and provider, paid from two places' };
-    if (b.amount >= 500) return { id: x.id, why: 'same amount within a few days, from two places' };
+    if (gap <= 5 && b.amount >= 500) return { id: x.id, why: 'same amount within a few days, from two places' };
   }
   return null;
 }
