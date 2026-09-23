@@ -88,7 +88,8 @@ nav.tabs a.add span.plus { width:44px; height:44px; border-radius:22px; backgrou
 .chip { border:1px solid var(--line); background:var(--surface); border-radius:20px; padding:6px 12px; font-size:14px; white-space:nowrap; }
 .chip.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
 .filters { display:flex; gap:8px; margin-bottom:6px; }
-.filters select, .filters input { flex:1; min-width:0; }
+.filters select, .filters input { flex:1; min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--ink); min-height:46px; -webkit-appearance:none; appearance:none; }
+.filters input[type=search]::-webkit-search-decoration, .filters input[type=search]::-webkit-search-cancel-button { -webkit-appearance:none; }
 
 form.f label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
 form.f input, form.f select, form.f textarea { width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); min-height:46px; }
@@ -607,7 +608,9 @@ async function vCalendar() {
 }
 
 /* ---------- Bills list ---------- */
-async function vBills() {
+// The results are their own block so typing in the search box only redraws them. Rebuilding
+// the box itself on every keystroke closes the keyboard on iPhone and drops the letters.
+function billsResults() {
   const f = S.filters, q = f.q.toLowerCase();
   let list = S.bills.filter(b => inGroup(b) && (f.status === 'all' || (f.status === 'open' ? isOpen(b) : b.status === f.status)) && (!f.cat || b.category === f.cat) && (!f.person || b.person === f.person)
     && (!q || [b.provider, b.desc, b.notes, b.category, b.account, String(b.amount)].join(' ').toLowerCase().includes(q)));
@@ -615,17 +618,21 @@ async function vBills() {
   const found = list.length, shown = Math.min(found, S.listLimit || PAGE);
   const page = list.slice(0, shown);
   const groups = {}; page.forEach(b => (groups[monthKey(billDate(b)) || 'undated'] = groups[monthKey(billDate(b)) || 'undated'] || []).push(b));
-  const chip = (v, l) => `<button class="chip ${f.status === v ? 'on' : ''}" data-action="filter-status" data-v="${v}">${l}</button>`;
   const total = list.reduce((a, b) => a + (b.amount || 0), 0);
+  return `<div class="group"><span>${found} bills${shown < found ? ` · showing ${shown}` : ''}</span><span class="num">${money(total)}</span></div>
+  ${Object.keys(groups).sort().reverse().map(k => `<div class="group"><span>${k === 'undated' ? 'No date' : monthName(k)}</span><span class="num">${money(groups[k].reduce((a, b) => a + (b.amount || 0), 0))}</span></div><div class="list">${groups[k].map(b => billRow(b, { person: true })).join('')}</div>`).join('') || '<div class="empty">No bills match. Add one with the + button.</div>'}
+  ${shown < found ? `<div class="btns"><button class="btn block" data-action="show-more">Show ${Math.min(PAGE, found - shown)} more of ${found - shown}</button></div>` : ''}`;
+}
+async function vBills() {
+  const f = S.filters;
+  const chip = (v, l) => `<button class="chip ${f.status === v ? 'on' : ''}" data-action="filter-status" data-v="${v}">${l}</button>`;
   return `<h1>Bills</h1>
   ${groupChips()}
   <div class="chips">${chip('all', 'All')}${chip('open', 'Unpaid')}${chip('paid', 'Paid')}${chip('direct_debit', 'Direct debit')}${chip('unknown', 'Check')}</div>
   <div class="filters"><select data-action="filter-cat"><option value="">All categories</option>${S.cats.map(c => `<option ${f.cat === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
   <select data-action="filter-person"><option value="">Everyone</option>${PEOPLE.map(p => `<option ${f.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
-  <div class="filters"><input type="search" placeholder="Search provider, description, amount" value="${esc(f.q)}" data-action="filter-q"></div>
-  <div class="group"><span>${found} bills${shown < found ? ` · showing ${shown}` : ''}</span><span class="num">${money(total)}</span></div>
-  ${shown < found ? '' : ''}${Object.keys(groups).sort().reverse().map(k => `<div class="group"><span>${k === 'undated' ? 'No date' : monthName(k)}</span><span class="num">${money(groups[k].reduce((a, b) => a + (b.amount || 0), 0))}</span></div><div class="list">${groups[k].map(b => billRow(b, { person: true })).join('')}</div>`).join('') || '<div class="empty">No bills match. Add one with the + button.</div>'}
-  ${shown < found ? `<div class="btns"><button class="btn block" data-action="show-more">Show ${Math.min(PAGE, found - shown)} more of ${found - shown}</button></div>` : ''}`;
+  <div class="filters"><input type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Search provider, description, amount" value="${esc(f.q)}" data-action="filter-q"></div>
+  <div id="billresults">${billsResults()}</div>`;
 }
 
 /* ---------- auto-save to the Mac (only when served by serve_bills.py) ---------- */
@@ -1132,7 +1139,7 @@ document.addEventListener('click', async e => {
   else if (a === 'day') { const d = el.dataset.date; const list = [...S.bills, ...projected(400)].filter(b => b.due === d && catGroup(b.category) !== 'living');
     openSheet(`<h2 style="margin-top:0">${fmtDate(d)}</h2><div class="list">${list.map(b => billRow(b)).join('') || '<div class="empty">Nothing due</div>'}</div><div class="btns"><a class="btn" href="#edit/new" data-action="close-sheet">Add a bill for this day</a></div>`); S.draft = { id: 'new', status: 'unpaid', person: 'Joint', received: todayISO(), due: d, files: [], recurring: '' }; }
   else if (a === 'close-sheet') closeSheet();
-  else if (a === 'show-more') { S.listLimit = (S.listLimit || PAGE) + PAGE; render(); }
+  else if (a === 'show-more') { S.listLimit = (S.listLimit || PAGE) + PAGE; const box = $('#billresults'); if (box) box.innerHTML = billsResults(); else render(); }
   else if (a === 'filter-status') { S.filters.status = el.dataset.v; render(); }
   else if (a === 'use-amount') { $('#billform [name=amount]').value = el.dataset.v; }
   else if (a === 'skip') { S.draft = null; location.hash = '#add'; }
@@ -1173,7 +1180,8 @@ document.addEventListener('change', async e => {
   else if (a === 'import-json' && el.files[0]) importJSON(el.files[0]);
   else if (a === 'import-csv' && el.files[0]) importCSV(el.files[0]);
 });
-document.addEventListener('input', e => { if (e.target.dataset.action === 'filter-q') { S.filters.q = e.target.value; clearTimeout(S._qh); S._qh = setTimeout(() => render(), 300); } });
+document.addEventListener('input', e => { if (e.target.dataset.action === 'filter-q') { S.filters.q = e.target.value; S.listLimit = PAGE; clearTimeout(S._qh);
+  S._qh = setTimeout(() => { const box = $('#billresults'); if (box) box.innerHTML = billsResults(); else render(); }, 200); } });
 document.addEventListener('submit', async e => {
   e.preventDefault(); const f = e.target;
   if (f.id === 'billform') saveForm(f);
