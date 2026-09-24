@@ -89,14 +89,18 @@ nav.tabs a.add span.plus { width:44px; height:44px; border-radius:22px; backgrou
 .chip.on { background:var(--ink); color:var(--bg); border-color:var(--ink); }
 .filters { display:flex; gap:8px; margin-bottom:6px; }
 .filters select, .filters input { flex:1; min-width:0; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--ink); min-height:46px; -webkit-appearance:none; appearance:none; }
-.filters input[type=search]::-webkit-search-decoration, .filters input[type=search]::-webkit-search-cancel-button { -webkit-appearance:none; }
+.filters input[type=search]::-webkit-search-decoration { -webkit-appearance:none; }
 
 form.f label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
 form.f input, form.f select, form.f textarea { width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); min-height:46px; }
 form.f textarea { min-height:70px; }
 form.f .two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 form.f .three { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
-input[type=color] { padding:2px; height:40px; width:56px; }
+input[type=color] { padding:0; height:30px; width:30px; border:1px solid var(--line); border-radius:15px; background:none; -webkit-appearance:none; appearance:none; overflow:hidden; }
+input[type=color]::-webkit-color-swatch-wrapper { padding:0; }
+input[type=color]::-webkit-color-swatch { border:0; border-radius:15px; }
+form.f input[type=color] { width:46px; height:46px; border-radius:8px; }
+form.f input[type=color]::-webkit-color-swatch { border-radius:6px; }
 
 .cal { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
 .cal .head { display:flex; align-items:center; justify-content:space-between; padding:10px 8px; }
@@ -111,8 +115,10 @@ input[type=color] { padding:2px; height:40px; width:56px; }
 .cal .strip.paid { opacity:.45; }
 .cal .strip.projected { background:transparent; border:1.5px dashed var(--c); color:var(--ink); line-height:12px; height:15px; box-sizing:border-box; }
 .cal .more { font-size:10px; color:var(--muted); }
-.dupe { margin:18px 0; }
-.dupe .btns { margin-top:8px; }
+.dupe { margin:14px 0 18px; }
+.dupe-actions { display:flex; align-items:center; gap:8px; margin-top:6px; }
+.dupe-actions span { flex:1; min-width:0; }
+.dot { display:inline-block; width:10px; height:10px; border-radius:5px; margin-right:6px; vertical-align:-1px; }
 .row.catrow .ct { min-width:0; }
 .row.catrow .track { display:block; height:6px; border-radius:3px; background:var(--soft); margin:5px 0 4px; overflow:hidden; }
 .row.catrow .track i { display:block; height:100%; border-radius:3px; }
@@ -432,7 +438,7 @@ function findDupe(b, pool) {
     // A matching invoice number is strong on its own, and an invoice is often paid weeks later.
     const xrefs = invRefs(x.desc + ' ' + x.notes);
     if (gap <= 45 && refs.length && xrefs.length && refs.some(r => xrefs.includes(r)))
-      return { id: x.id, why: 'same invoice number' };
+      return { id: x.id, why: 'Same invoice number' };
     // Otherwise the two have to come from different places. The same amount leaving the
     // same account twice is a bill that repeats — a mortgage, an insurance instalment —
     // not the same spend counted twice.
@@ -440,9 +446,9 @@ function findDupe(b, pool) {
     // Same provider from two places — an invoice you entered and the bank payment of it —
     // is a duplicate even when the bill repeats monthly; the instalment matches its own payment.
     if (gap <= 60 && nameWords(x.provider).some(w => words.has(w)))
-      return { id: x.id, why: 'same amount and provider, from two places' };
+      return { id: x.id, why: 'Same amount and provider' };
     if (b.recurring || x.recurring) continue;
-    if (gap <= 5 && b.amount >= 500) return { id: x.id, why: 'same amount within a few days, from two places' };
+    if (gap <= 5 && b.amount >= 500) return { id: x.id, why: 'Same amount, days apart' };
   }
   return null;
 }
@@ -504,7 +510,7 @@ async function render(navigated) {
   // keyboard after a single letter. Remember the caret and put it back.
   const ae = document.activeElement;
   const caret = ae && ae.dataset && ae.dataset.action === 'filter-q' ? ae.selectionStart : null;
-  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, dupes: vDupes, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
+  const views = { home: vHome, calendar: vCalendar, bills: vBills, add: vAdd, spend: vSpend, spendcat: vSpendCat, dupes: vDupes, categories: vCategories, insights: vInsights, settings: vSettings, bill: vDetail, edit: vEdit, rules: vRules, rule: vRule };
   const fn = views[view] || vHome;
   $('main').innerHTML = await fn(arg);
   nav();
@@ -521,13 +527,19 @@ window.addEventListener('hashchange', () => { closeSheet(); render(true); });
 function billRow(b, opts = {}) {
   const st = b.projected ? 'expected' : b.status;
   const label = b.projected ? 'Expected' : STATUS[st] || st;
-  const spent = !b.projected && b.status === 'paid' && catGroup(b.category) === 'living';
-  const when = spent ? fmtShort(b.paidDate || billDate(b))
-    : b.due ? (b.projected ? 'Expected ' : 'Due ') + fmtShort(b.due) : (b.received ? 'Received ' + fmtShort(b.received) : '');
+  // Imported rows carry the raw statement line as their description. That belongs on the
+  // detail screen, not in a list — here the subtitle says what kind of thing it is and where
+  // the money came from.
+  const imported = b.source === 'import' || !!b.account;
+  const sub = imported ? esc(b.category) + (b.account ? ' · ' + esc(b.account) : '') : esc(b.desc || b.category);
+  const when = b.projected ? 'Expected ' + fmtShort(b.due)
+    : b.status === 'paid' ? 'Paid ' + fmtShort(b.paidDate || billDate(b))
+    : b.status === 'direct_debit' ? 'Debited ' + fmtShort(b.paidDate || billDate(b))
+    : b.due ? 'Due ' + fmtShort(b.due) : (b.received ? 'Received ' + fmtShort(b.received) : '');
   const od = isOpen(b) && b.due && b.due < todayISO() ? ` · <span style="color:var(--danger)">${-daysUntil(b.due)}d overdue</span>` : '';
   return `<a class="row ${b.projected ? 'projected' : ''}" href="${b.projected ? '#add' : '#bill/' + b.id}" style="--c:${catColor(b.category)}">
     <span class="bar"></span>
-    <span><span class="t">${esc(b.provider || 'Unknown provider')}</span><br><span class="s">${esc(b.desc || b.category)}${opts.person && b.person !== 'Joint' ? ' · ' + esc(b.person) : ''}${when ? ' · ' + when : ''}${od}</span></span>
+    <span><span class="t">${esc(b.provider || 'Unknown provider')}</span><br><span class="s">${sub}${opts.person && b.person !== 'Joint' ? ' · ' + esc(b.person) : ''}${when ? ' · ' + when : ''}${od}</span></span>
     <span class="amt num">${money(b.projected ? calAmt(b) : b.amount)}<span class="st ${st}">${label}</span></span></a>`;
 }
 function donut(entries, size = 130) {
@@ -631,7 +643,7 @@ async function vBills() {
   return `<h1>Bills</h1>
   <p class="muted small" style="margin:0 0 8px">Day-to-day spending is on the Spend tab.</p>
   <div class="chips">${chip('all', 'All')}${chip('open', 'Unpaid')}${chip('paid', 'Paid')}${chip('direct_debit', 'Direct debit')}${chip('unknown', 'Check')}</div>
-  <div class="filters"><select data-action="filter-cat"><option value="">All categories</option>${S.cats.map(c => `<option ${f.cat === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+  <div class="filters"><select data-action="filter-cat">${catOptions(f.cat, 'All categories')}</select>
   <select data-action="filter-person"><option value="">Everyone</option>${PEOPLE.map(p => `<option ${f.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
   <div class="filters"><input type="search" inputmode="search" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Search provider, description, amount" value="${esc(f.q)}" data-action="filter-q"></div>
   <div id="billresults">${billsResults()}</div>`;
@@ -753,7 +765,7 @@ async function vEdit(id) {
   ${flags}
   <form class="f" id="billform" data-id="${esc(id)}">
     <label>Provider</label><input name="provider" list="providers" value="${esc(b.provider)}" required autocomplete="off"><datalist id="providers">${providers.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
-    <div class="two"><div><label>Category</label><select name="category">${S.cats.map(c => `<option ${b.category === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="two"><div><label>Category</label><select name="category">${catOptions(b.category)}</select></div>
     <div><label>Whose</label><select name="person">${PEOPLE.map(p => `<option ${b.person === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div></div>
     <label>Description or reference</label><input name="desc" value="${esc(b.desc)}" placeholder="e.g. Quarterly bill, Invoice 1234">
     <label>Amount</label><input name="amount" type="number" step="0.01" inputmode="decimal" value="${b.amount ?? ''}" required>${cands}
@@ -795,15 +807,25 @@ async function vDetail(id) {
   const b = S.bills.find(x => x.id === id); if (!b) return '<div class="empty">Bill not found</div>';
   const od = isOpen(b) && b.due && b.due < todayISO();
   return `<div class="detail" style="border-left:5px solid ${catColor(b.category)};padding-left:14px">
-  <h1>${esc(b.provider)}</h1><div class="muted">${esc(b.desc || b.category)}</div>
+  <h1>${esc(b.provider)}</h1><div class="muted"><span class="dot" style="background:${catColor(b.category)}"></span>${esc(b.category)}${catGroup(b.category) === 'living' ? ' · day to day' : ''}</div>
   <div class="hero"><div class="big num">${money(b.amount)}</div><div class="delta" style="color:${od ? 'var(--danger)' : 'inherit'};font-size:15px;font-weight:600">${STATUS[b.status]}${od ? ' · ' + (-daysUntil(b.due)) + ' days overdue' : ''}</div></div>
-  <dl><dt>Category</dt><dd>${esc(b.category)}</dd><dt>Whose</dt><dd>${esc(b.person)}</dd><dt>Received</dt><dd>${fmtDate(b.received)}</dd><dt>Due</dt><dd>${fmtDate(b.due)}</dd>
-  ${b.account ? `<dt>Account</dt><dd>${esc(b.account)}</dd>` : ''}
-  ${b.paidDate ? `<dt>Paid</dt><dd>${fmtDate(b.paidDate)}${b.method ? ' by ' + esc(b.method) : ''}</dd>` : ''}${b.recurring ? `<dt>Repeats</dt><dd>${FREQ[b.recurring]}</dd>` : ''}${b.instalment ? `<dt>Per payment</dt><dd>${money(b.instalment)}</dd>` : ''}
-  ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}<dt>Source</dt><dd>${esc(b.source || 'manual')}${b.link ? ` · <a href="${esc(b.link)}" target="_blank" rel="noopener">Open email</a>` : ''}</dd></dl></div>
+  <dl>${b.desc ? `<dt>Description</dt><dd>${esc(b.desc)}</dd>` : ''}<dt>Whose</dt><dd>${esc(b.person)}</dd>
+  ${b.paidDate ? `<dt>Paid</dt><dd>${fmtDate(b.paidDate)}${b.method ? ' · ' + esc(b.method) : ''}</dd>` : ''}
+  ${b.account ? `<dt>Account</dt><dd>CommBank ${esc(b.account)}</dd>` : ''}
+  ${b.due ? `<dt>Due</dt><dd>${fmtDate(b.due)}</dd>` : ''}${b.received && b.received !== b.due ? `<dt>Received</dt><dd>${fmtDate(b.received)}</dd>` : ''}
+  ${b.recurring ? `<dt>Repeats</dt><dd>${FREQ[b.recurring]}</dd>` : ''}${b.instalment ? `<dt>Per payment</dt><dd>${money(b.instalment)}</dd>` : ''}
+  ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}
+  <dt>Added</dt><dd>${b.source === 'import' ? 'From a statement import' : b.source === 'upload' ? 'Read from a document' : 'By hand'}${b.link ? ` · <a href="${esc(b.link)}" target="_blank" rel="noopener">Open email</a>` : ''}</dd></dl></div>
   <div class="btns">${isOpen(b) || b.status === 'unknown' ? `<button class="btn primary" data-action="mark-paid" data-id="${id}">Mark paid</button>` : ''}<a class="btn" href="#edit/${id}">Edit</a></div>
   ${(b.files || []).length ? `<h2>Documents</h2><div class="list">${b.files.map(f => `<button class="row" style="--c:var(--line);width:100%;border:0;background:none;cursor:pointer" data-action="open-file" data-id="${f.id}"><span class="bar"></span><span><span class="t">${esc(f.name)}</span><br><span class="s">${esc(f.type)}</span></span><span class="amt">Open</span></button>`).join('')}</div>` : ''}
   <div class="btns" style="margin-top:28px"><button class="btn danger" data-action="delete" data-id="${id}">Delete this bill</button></div>`;
+}
+
+/* ---------- category picker ---------- */
+function catOptions(selected, blank) {
+  const grp = g => S.cats.filter(c => (c.group || 'bills') === g).sort((a, b) => a.name.localeCompare(b.name))
+    .map(c => `<option ${selected === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  return (blank ? `<option value="">${esc(blank)}</option>` : '') + `<optgroup label="Bills">${grp('bills')}</optgroup><optgroup label="Day to day">${grp('living')}</optgroup>`;
 }
 
 /* ---------- Spending ---------- */
@@ -831,7 +853,7 @@ const isSpend = b => catGroup(b.category) === 'living' && b.amount;
 const inRange = (b, f, to) => { const d = billDate(b); return d && d >= f && d <= to; };
 const sumOf = a => a.reduce((x, b) => x + (b.amount || 0), 0);
 function deltaTag(now, prev) {
-  if (!prev) return '';
+  if (!prev || prev < 25 || now < 25) return '';   // a percentage of pocket change is noise
   const pc = Math.round((now - prev) / prev * 100);
   if (!isFinite(pc) || pc === 0) return '<span class="muted small">same as before</span>';
   const up = pc > 0;
@@ -964,7 +986,7 @@ async function vInsights() {
   const usedCats = [...new Set(yearBills.map(b => b.category))];
   return `<h1>Insights</h1>
   ${groupChips()}
-  <div class="chips"><button class="chip ${reg ? '' : 'on'}" data-action="ins-all">Everything</button><button class="chip ${reg ? 'on' : ''}" data-action="ins-regular">Regular bills only</button></div>
+  <div class="chips"><button class="chip ${reg ? '' : 'on'}" data-action="ins-all">All bills</button><button class="chip ${reg ? 'on' : ''}" data-action="ins-regular">Recurring only</button></div>
   <h2>Last 12 months</h2><div class="tile"><svg class="chart" viewBox="0 0 ${W} ${H}">${bars}</svg><div class="legend">${usedCats.map(c => `<span style="--c:${catColor(c)}">${esc(c)}</span>`).join('')}</div></div>
   <h2>Where it went</h2><div class="tile">${donut(byCategory(yearBills))}</div>
   <h2>Biggest providers</h2><div class="list">${provRows.map(([p, v]) => `<div class="row" style="--c:${catColor((S.bills.find(b => b.provider === p) || {}).category)}"><span class="bar"></span><span><span class="t">${esc(p)}</span><br><span class="s">${S.bills.filter(b => b.provider === p && months.includes(monthKey(billDate(b)))).length} bills</span></span><span class="amt num">${money(v)}</span></div>`).join('')}</div>
@@ -987,24 +1009,33 @@ function sources() {
   return Object.entries(m).sort((a, b) => b[1].n - a[1].n);
 }
 
+/* ---------- Categories ---------- */
+async function vCategories() {
+  const row = (c, i) => `<div class="rule"><span style="display:flex;align-items:center;gap:10px;min-width:0"><input type="color" value="${c.color}" data-action="cat-color" data-i="${i}"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span></span><span style="display:flex;gap:6px;flex-shrink:0"><button class="btn sm" data-action="cat-group" data-i="${i}">${c.group === 'living' ? 'Day to day' : 'Bill'}</button><button class="btn sm danger" data-action="cat-del" data-i="${i}">Remove</button></span></div>`;
+  const grp = g => S.cats.map((c, i) => [c, i]).filter(([c]) => (c.group || 'bills') === g).sort((a, b) => a[0].name.localeCompare(b[0].name)).map(([c, i]) => row(c, i)).join('');
+  return `<h1>Categories</h1>
+  <p class="muted small">The button on each one says where it lives. <b>Bill</b> means the Home, Calendar and Bills tabs; <b>Day to day</b> means the Spend tab. Tap it to swap.</p>
+  <h2>Bills</h2><div class="list">${grp('bills')}</div>
+  <h2>Day to day</h2><div class="list">${grp('living')}</div>
+  <h2>Add one</h2>
+  <form class="f" id="catform" style="display:flex;gap:8px;align-items:flex-end"><div style="flex:1"><label>New category</label><input name="name" required></div><div><label>Colour</label><input type="color" name="color" value="#6B7A85"></div><button class="btn" type="submit">Add</button></form>`;
+}
+
 /* ---------- Duplicates ---------- */
 async function vDupes() {
   const list = dupeList().sort((a, b) => (b.amount || 0) - (a.amount || 0));
   const pair = b => {
     const other = S.bills.find(x => x.id === b.dupe) || {};
-    const line = (x, tag) => `<div class="row" style="--c:${catColor(x.category)}"><span class="bar"></span>
+    const line = (x, tag) => `<a class="row" href="#bill/${x.id}" style="--c:${catColor(x.category)}"><span class="bar"></span>
       <span><span class="t">${esc(x.provider || '—')}</span><br><span class="s">${esc(tag)} · ${fmtShort(billDate(x))}${x.account ? ' · ' + esc(x.account) : ''}${x.method ? ' · ' + esc(x.method) : ''}</span></span>
-      <span class="amt num">${money(x.amount)}</span></div>`;
+      <span class="amt num">${money(x.amount)}</span></a>`;
     return `<div class="dupe">
-      <div class="muted small" style="margin:0 0 6px">Matched on ${esc(b.dupeWhy || 'amount and date')}</div>
       <div class="list">${line(other, 'Already in the app')}${line(b, 'Newly imported')}</div>
-      <div class="btns">
-        <button class="btn" data-action="dupe-keep" data-id="${b.id}">Keep both</button>
-        <a class="btn" href="#bill/${b.id}">Open</a>
-        <button class="btn danger" data-action="dupe-del" data-id="${b.id}">Remove the new one</button>
-      </div></div>`;
+      <div class="dupe-actions"><span class="muted small">${esc(b.dupeWhy || 'amount and date')}</span>
+        <button class="btn sm" data-action="dupe-keep" data-id="${b.id}">Keep both</button>
+        <button class="btn sm danger" data-action="dupe-del" data-id="${b.id}">Remove new</button></div></div>`;
   };
-  return `<h1>Possible duplicates</h1>
+  return `<h1>Possible duplicates${list.length ? ` <span class="muted" style="font-weight:500">${list.length}</span>` : ''}</h1>
   <p class="muted small">Two rows for the same money: an invoice or card purchase that also turns up as the bank payment. A matching invoice number counts for up to 45 days; otherwise the amounts must match within a few days <em>and</em> come from different accounts — so a mortgage or insurance instalment that repeats isn't flagged. Nothing has been deleted.</p>
   <div class="btns"><button class="btn" data-action="dupe-scan">Scan everything again</button></div>
   ${list.length ? list.map(pair).join('') : '<div class="empty">Nothing flagged. </div>'}`;
@@ -1025,10 +1056,9 @@ async function vSettings() {
   <h2>Duplicates</h2><p class="muted small">Checks for the same amount appearing twice within a fortnight — an invoice and the bank payment that settled it, say. ${dupeList().length ? dupeList().length + ' flagged right now.' : 'None flagged.'}</p>
   <div class="btns"><button class="btn" data-action="dupe-scan">Check for duplicates</button><a class="btn" href="#dupes">Review</a></div>
   <h2>Reading rules</h2><p class="muted small">${S.rules.length} provider rules decide how PDFs are read.</p><div class="btns"><a class="btn" href="#rules">Manage rules</a></div>
-  <h2>Categories</h2><div class="list">${S.cats.map((c, i) => `<div class="rule"><span style="display:flex;align-items:center;gap:10px"><input type="color" value="${c.color}" data-action="cat-color" data-i="${i}"><span>${esc(c.name)}</span></span><span style="display:flex;gap:6px"><button class="btn sm" data-action="cat-group" data-i="${i}">${(c.group === 'living') ? 'Day to day' : 'Bill'}</button><button class="btn sm danger" data-action="cat-del" data-i="${i}">Remove</button></span></div>`).join('')}</div>
-  <form class="f" id="catform" style="display:flex;gap:8px;align-items:flex-end"><div style="flex:1"><label>New category</label><input name="name" required></div><div><label>Colour</label><input type="color" name="color" value="#6B7A85"></div><button class="btn" type="submit">Add</button></form>
+  <h2>Categories</h2><p class="muted small">${S.cats.filter(c => c.group !== 'living').length} for bills, ${S.cats.filter(c => c.group === 'living').length} for day to day.</p><div class="btns"><a class="btn" href="#categories">Manage categories</a></div>
   <h2>Danger zone</h2><div class="btns"><button class="btn danger" data-action="reset">Delete everything and reload the starting data</button></div>
-  <p class="muted small">Household bills · v1 · ${S.bills.length} bills stored</p>`;
+  <p class="muted small">Household bills · v2 · ${S.bills.length} bills stored</p>`;
 }
 async function backup() {
   toast('Preparing backup…');
@@ -1108,7 +1138,7 @@ async function vRule(id) {
   return `<h1>${id === 'new' ? 'New rule' : esc(r.provider)}</h1>
   <form class="f" id="ruleform" data-id="${esc(r.id)}" data-new="${id === 'new'}">
     <label>Provider name</label><input name="provider" value="${esc(r.provider)}" required>
-    <div class="two"><div><label>Category</label><select name="category">${S.cats.map(c => `<option ${r.category === c.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="two"><div><label>Category</label><select name="category">${catOptions(r.category)}</select></div>
     <div><label>Repeats</label><select name="freq">${Object.entries(FREQ).map(([k, v]) => `<option value="${k}" ${r.freq === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div></div>
     <label>Match words (any one of these, comma separated)</label><input name="words" value="${esc(words)}" placeholder="e.g. telstra, telstra.com.au">
     <label>Amount pattern (one per line, tried in order)</label><textarea name="amount">${esc(pat(r.amount))}</textarea>
@@ -1187,7 +1217,7 @@ document.addEventListener('input', e => { if (e.target.dataset.action === 'filte
 document.addEventListener('submit', async e => {
   e.preventDefault(); const f = e.target;
   if (f.id === 'billform') saveForm(f);
-  else if (f.id === 'catform') { const fd = new FormData(f); S.cats.push({ name: fd.get('name').trim(), color: fd.get('color') }); await saveCats(); render(); }
+  else if (f.id === 'catform') { const fd = new FormData(f); S.cats.push({ name: fd.get('name').trim(), color: fd.get('color'), group: 'bills' }); await saveCats(); render(); }
   else if (f.id === 'ruleform') { const r = ruleFromForm(f); const i = S.rules.findIndex(x => x.id === r.id); if (i >= 0) S.rules[i] = r; else S.rules.unshift(r); await saveRules(); toast('Rule saved'); location.hash = '#rules'; }
 });
 $('#sheet-bg').addEventListener('click', closeSheet);
